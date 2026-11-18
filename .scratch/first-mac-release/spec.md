@@ -20,11 +20,13 @@ The calendar has Day, full Week and Next X Days views. I can scroll horizontally
 | I right-click an eligible Google event and choose **Delete from Google**. | Deletion removes the event at Google. The menu distinguishes this action from hiding it locally. |
 | I leave the dedicated Google calendar of TickTick copies unselected. | My original TickTick tasks appear once, alongside events from my other selected Google calendars. |
 
+The public TickTick API documents original-task creation, edits, completion and dated Inbox reads. Test the same task in TickTick before and after a time change, including its notes and checklist. Single-time tasks, recurrence and the account's support for durations need particular attention. Daymark has verified live Google reads and tested Google writes with simulated responses. [TickTick findings](issues/02-ticktick-api.md) · [Daymark evidence](daymark.md)
+
 ## BMW calendar roadmap
 
-1. **First release.** Show BMW meetings read-only through the existing workaround. The Mac calendar and Google Calendar are possible routes.
-2. **Direct reading.** Investigate reading the original Exchange calendar. Identify available routes, the access each needs and how to check which the company permits.
-3. **Editing.** Explore moving and resizing meetings where the account permits it. Distinguish meetings the user organizes from invitations received from someone else.
+1. **First release.** Show BMW meetings read-only through one selected source. Check that a meeting already moved in Outlook appears at the new time in the chosen Mac or Google calendar. The current copying method and its delay still need to be identified.
+2. **Direct reading.** If the Exchange account already syncs to Apple Calendar, EventKit can read its local calendar. For an Exchange Online mailbox, an approved Microsoft Graph connection can read meetings directly. Which route the company permits is open. [Exchange access findings](issues/03-exchange-access.md)
+3. **Editing.** Explore moving and resizing meetings the user organizes, including the update guests receive. For received invitations, evaluate proposing a new time where the organizer allows it. [Meeting permissions](issues/03-exchange-access.md)
 
 ## Platforms
 

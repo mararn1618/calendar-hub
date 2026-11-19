@@ -20,6 +20,13 @@ import { verifyCalendarColors } from './calendar-color-journeys.mjs';
 import { verifyExchangeAllDayHiding } from './exchange-hide-journeys.mjs';
 import { verifyMacUsability } from './mac-usability-journeys.mjs';
 
+const modes = ['--full', '--smoke', '--pending-edits', '--ticktick-requests'];
+const [mode = '--full', ...extra] = process.argv.slice(2);
+if (!modes.includes(mode) || extra.length) {
+  console.error('Choose one suite from ' + modes.join(', ') + '.');
+  process.exit(2);
+}
+
 const project = fileURLToPath(new URL('../', import.meta.url));
 const started = new Date().toISOString(), run = started.replaceAll(/[:.]/g, '-');
 const evidence = join(project, 'build/verification', 'desktop-' + run);
@@ -34,7 +41,7 @@ const report = {
   os: execFileSync('sw_vers', ['-productVersion'], { encoding: 'utf8' }).trim(),
   arch: process.arch, zone: Intl.DateTimeFormat().resolvedOptions().timeZone, day: provider.day,
   boundary: 'Packaged Mac app, production calendar adapters, loopback TickTick and Google services, simulated consent, Mac calendar store and notification center, isolated profiles',
-  passed: [], status: 'running'
+  suite: mode.slice(2), passed: [], status: 'running'
 };
 
 function shift(day, days) {
@@ -243,7 +250,7 @@ async function verifyRemainingJourneys(page, helpers) {
 
 try {
   execFileSync('codesign', ['--verify', '--deep', '--strict', appPath]);
-  if (!process.argv.includes('--ticktick-requests')) {
+  if (mode !== '--ticktick-requests') {
     const page = await driver.launch();
     await onboard(page);
     report.passed.push('Connect and select sources');
@@ -252,9 +259,10 @@ try {
     console.log('Drag and resize while the provider response is held');
     await verifyPendingEdits({ page, ...helpers });
     report.passed.push('Pending calendar edits, permission review, rejected writes and scoped TickTick requests');
-    if (!process.argv.includes('--pending-edits')) await verifyRemainingJourneys(page, helpers);
+    if (mode === '--full') await verifyRemainingJourneys(page, helpers);
+    else await driver.close();
   }
-  if (!process.argv.includes('--pending-edits')) {
+  if (mode !== '--pending-edits') {
     console.log('TickTick request limits with 52 selected lists');
     report.tickTickRequests = await verifyTickTickRequestJourney({ temporary, evidence });
     report.passed.push('52 selected TickTick lists, bulk reads, cached tasks and reminders during a rate limit, independent Exchange updates and recovery',

@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      full_ui_suite:
+        description: Run all packaged UI tests
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -50,8 +55,20 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run package:mac
-      - run: npm run test:e2e
-      - run: npm run package:dmg
+      - name: Test the packaged app and build the DMG
+        env:
+          UI_SUITE: ${{ inputs.full_ui_suite && 'full' || 'smoke' }}
+        run: |
+          npm run package:dmg &
+          dmg_pid=$!
+          ui_status=0
+          npm run test:e2e -- "--$UI_SUITE" || ui_status=$?
+          dmg_status=0
+          wait "$dmg_pid" || dmg_status=$?
+          if (( ui_status != 0 || dmg_status != 0 )); then
+            echo "::error::Packaged UI tests exited with $ui_status. DMG build exited with $dmg_status."
+            exit 1
+          fi
       - name: Prepare release notes
         if: github.ref_type == 'tag'
         run: |

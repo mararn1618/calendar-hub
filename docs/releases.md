@@ -1,6 +1,8 @@
 # Mac preview releases
 
-Pushing a tag such as `v0.5.0` starts the release. GitHub Actions runs the automated tests, builds the Apple Silicon app, exercises the packaged app with test accounts, and mounts the DMG to verify it. Once the checks pass, Actions publishes a GitHub prerelease with the installer and its SHA-256 checksum.
+Pushing a version tag starts the release. GitHub Actions runs all unit and integration tests and builds the Apple Silicon app. It then runs a short set of packaged UI tests while creating and verifying the DMG. Both must pass before Actions uploads the installer and checksum.
+
+The short suite checks browser sign-in, calendar selection, drag and resize writes to Google and TickTick, and TickTick polling and recovery from a request limit. It uses local test accounts. To run the full set of packaged UI tests, choose **Actions → Mac preview release → Run workflow** and check **Run all packaged UI tests**. On a Mac, `npm run test:e2e` runs the full set and `npm run test:e2e -- --smoke` runs the release checks.
 
 ## Choose the version
 

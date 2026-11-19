@@ -1,4 +1,4 @@
-import { MINUTE, SLOT, addDays, createAxis, differenceInDays, formatDate, localDate, localMidnight, localTime, timedLayout, zoneOffset } from './dates.js';
+import { MINUTE, SLOT, addDays, appointmentRange, createAxis, differenceInDays, formatDate, localDate, localMidnight, localTime, timedLayout, zoneOffset } from './dates.js';
 import { button, editable, element, sourceColor } from './dom.js';
 
 const PIXELS_PER_MINUTE = 1.1;
@@ -204,8 +204,19 @@ export function createPlanner(viewport, actions) {
     return block && items.get(key(block.dataset.sourceId, block.dataset.itemId));
   }
 
+  function minuteAt(cell, y) {
+    return (y - cell.getBoundingClientRect().top) / PIXELS_PER_MINUTE;
+  }
+
+  function selectionPoint(cell, y) {
+    const day = cell.dataset.date;
+    if (cell.classList.contains('all-day-cell')) return { day, allDay: true };
+    const instant = axis.instantAt(day, minuteAt(cell, y), true);
+    return instant === null ? null : { day, allDay: false, instant };
+  }
+
   viewport.addEventListener('click', event => {
-    if (skipClick) {
+    if (skipClick && event.detail) {
       event.preventDefault();
       event.stopPropagation();
       return;
@@ -214,12 +225,12 @@ export function createPlanner(viewport, actions) {
     if (item) actions.edit(item);
   });
   viewport.addEventListener('dblclick', event => {
-    if (event.target.closest('button')) return;
+    if (skipClick || event.target.closest('button')) return;
     const cell = event.target.closest('.day-column, .all-day-cell');
     if (!cell) return;
     const day = cell.dataset.date;
     if (cell.classList.contains('all-day-cell')) return actions.create({ day, allDay: true });
-    const minute = quarter((event.clientY - cell.getBoundingClientRect().top) / PIXELS_PER_MINUTE);
+    const minute = quarter(minuteAt(cell, event.clientY));
     const start = axis.instantAt(day, minute);
     if (start !== null) actions.create({ day, start });
   });
@@ -266,23 +277,35 @@ export function createPlanner(viewport, actions) {
   viewport.addEventListener('pointerdown', event => {
     if (gesture && event.pointerId !== gesture.pointerId) { cancel(); return; }
     if (event.button !== 0 || !event.isPrimary) return;
+    skipClick = false;
+    const cell = event.target.closest('.day-column, .all-day-cell');
+    if (!cell) return;
     const block = event.target.closest('.calendar-item');
-    const item = itemFrom(event.target);
-    if (!item || !editable(item, sources.get(item.sourceId))) return;
-    const date = block.dataset.date;
-    const edge = event.target.closest('[data-edge]')?.dataset.edge;
-    let offset = 0;
-    if (!item.allDay && !edge) {
-      const minute = (event.clientY - columns.get(date).getBoundingClientRect().top) / PIXELS_PER_MINUTE;
-      const grabbed = axis.instantAt(date, Math.max(0, Math.min(axis.minutes, minute)));
-      offset = Math.max(0, Math.min(Date.parse(item.end) - Date.parse(item.start), (grabbed ?? Date.parse(item.start)) - Date.parse(item.start)));
+    const date = cell.dataset.date;
+    const drag = { capture: block || cell, date, pointerId: event.pointerId, originX: event.clientX, originY: event.clientY, x: event.clientX, y: event.clientY };
+    if (block) {
+      const item = itemFrom(block);
+      if (!editable(item, sources.get(block.dataset.sourceId))) return;
+      drag.item = item;
+      drag.edge = event.target.closest('[data-edge]')?.dataset.edge;
+      drag.offset = 0;
+      if (!item.allDay && !drag.edge) {
+        const grabbed = axis.instantAt(date, Math.max(0, Math.min(axis.minutes, minuteAt(cell, event.clientY))));
+        const start = Date.parse(item.start);
+        drag.offset = Math.max(0, Math.min(Date.parse(item.end) - start, (grabbed ?? start) - start));
+      }
+    } else {
+      if (event.pointerType === 'touch' || event.ctrlKey) return;
+      drag.anchor = selectionPoint(cell, event.clientY);
+      if (!drag.anchor) return;
     }
-    gesture = { item, block, date, edge, offset, pointerId: event.pointerId, originX: event.clientX, originY: event.clientY, x: event.clientX, y: event.clientY };
+    gesture = drag;
   });
 
   function proposal(drag) {
     const cell = document.elementFromPoint(drag.x, drag.y)?.closest('.day-column, .all-day-cell');
     if (!cell || !viewport.contains(cell)) return;
+    if (drag.anchor) return appointmentRange(drag.anchor, selectionPoint(cell, drag.y));
     const day = cell.dataset.date;
     const { item, edge } = drag;
     if (cell.classList.contains('all-day-cell')) {
@@ -290,9 +313,9 @@ export function createPlanner(viewport, actions) {
       const span = item.allDay ? differenceInDays(item.start, item.end) : 1 + differenceInDays(localDate(item.start), localDate(Math.max(Date.parse(item.start), Date.parse(item.end) - 1)));
       const offsetDays = item.allDay ? differenceInDays(item.start, drag.date) : 0;
       const start = addDays(day, -offsetDays);
-      return { start, end: addDays(start, Math.max(1, span)), allDay: true, cell };
+      return { start, end: addDays(start, Math.max(1, span)), allDay: true };
     }
-    const minute = (drag.y - cell.getBoundingClientRect().top) / PIXELS_PER_MINUTE;
+    const minute = minuteAt(cell, drag.y);
     const instant = axis.instantAt(day, edge || item.allDay ? quarter(minute) : minute, edge === 'end');
     if (instant === null) return;
     let start = Date.parse(item.start);
@@ -306,25 +329,31 @@ export function createPlanner(viewport, actions) {
       start = midnight + quarter((proposed - midnight) / MINUTE) * MINUTE;
       end = start + duration;
     }
-    return { start: iso(start), end: iso(end), allDay: false, cell };
+    return { start: iso(start), end: iso(end), allDay: false };
   }
 
   function preview(drag) {
     viewport.querySelectorAll('.drag-preview').forEach(node => node.remove());
     const next = proposal(drag);
     if (!next) return;
+    const title = drag.item?.title ?? 'New appointment';
     if (next.allDay) {
-      next.cell.append(element('span', 'drag-preview all-day-preview', drag.item.title));
+      for (const cell of viewport.querySelectorAll('.all-day-cell')) {
+        if (cell.dataset.date >= next.start && cell.dataset.date < next.end) {
+          cell.append(element('span', 'drag-preview all-day-preview', title));
+        }
+      }
       return;
     }
+    const label = timeLabel(next) + ' · ' + title;
     for (const [date, column] of columns) {
-      const segments = timedLayout([{ ...drag.item, ...next }], date, axis);
+      const segments = timedLayout([next], date, axis);
       if (!segments.length) continue;
       const segment = segments[0];
       const ghost = element('div', 'drag-preview timed-preview');
       ghost.style.top = segment.from * PIXELS_PER_MINUTE + 'px';
       ghost.style.height = Math.max(16, (segment.to - segment.from) * PIXELS_PER_MINUTE) + 'px';
-      ghost.textContent = timeLabel(next) + ' · ' + drag.item.title;
+      ghost.textContent = label;
       column.append(ghost);
     }
   }
@@ -334,8 +363,11 @@ export function createPlanner(viewport, actions) {
     if (!drag?.active) return;
     const bounds = viewport.getBoundingClientRect();
     const header = viewport.querySelector('.timeline-header').getBoundingClientRect();
-    if (drag.x >= bounds.left && drag.x <= bounds.right && drag.y > header.bottom && drag.y <= bounds.bottom) {
-      const dy = drag.y < header.bottom + 26 ? -7 : drag.y > bounds.bottom - 30 ? 7 : 0;
+    const allDay = drag.anchor?.allDay;
+    const top = allDay ? viewport.querySelector('.all-day-row').getBoundingClientRect().top : header.bottom;
+    const bottom = allDay ? header.bottom : bounds.bottom;
+    if (drag.x >= bounds.left && drag.x <= bounds.right && drag.y >= top && drag.y < bottom) {
+      const dy = allDay ? 0 : drag.y < top + 26 ? -7 : drag.y > bottom - 30 ? 7 : 0;
       const dx = drag.x < bounds.left + 76 ? -7 : drag.x > bounds.right - 32 ? 7 : 0;
       const edge = dx || dy ? [dx, dy].join('/') : '';
       if (edge !== drag.scrollEdge) {
@@ -357,9 +389,10 @@ export function createPlanner(viewport, actions) {
     if (!drag.active) {
       if (Math.hypot(drag.x - drag.originX, drag.y - drag.originY) < 5) return;
       drag.active = true;
-      drag.block.setPointerCapture(event.pointerId);
-      drag.block.classList.add('drag-origin');
+      drag.capture.setPointerCapture(event.pointerId);
+      if (drag.item) drag.capture.classList.add('drag-origin');
       document.body.classList.add('dragging');
+      if (drag.anchor) document.body.classList.add('drawing-appointment');
       frame = requestAnimationFrame(autoScroll);
     }
     event.preventDefault();
@@ -370,10 +403,15 @@ export function createPlanner(viewport, actions) {
     if (!drag || drag.pointerId !== event.pointerId) return;
     drag.x = event.clientX;
     drag.y = event.clientY;
-    const next = drag.active && proposal(drag);
+    const change = drag.active && proposal(drag);
     cancel();
-    if (!next) return;
-    const { cell, ...change } = next;
+    if (!change) return;
+    if (drag.anchor) {
+      const { start, end, allDay } = change;
+      const dates = allDay ? { day: start, end } : { day: localDate(start), start: Date.parse(start), end: Date.parse(end) };
+      actions.create({ kind: 'appointment', allDay, ...dates });
+      return;
+    }
     const sameTime = drag.item.allDay === change.allDay && (change.allDay
       ? drag.item.start === change.start && drag.item.end === change.end
       : Date.parse(drag.item.start) === Date.parse(change.start) && Date.parse(drag.item.end) === Date.parse(change.end));
@@ -386,11 +424,10 @@ export function createPlanner(viewport, actions) {
     gesture = undefined;
     if (!drag.active) return;
     skipClick = true;
-    setTimeout(() => { skipClick = false; }, 0);
     cancelAnimationFrame(frame);
-    if (drag.block.hasPointerCapture(drag.pointerId)) drag.block.releasePointerCapture(drag.pointerId);
-    document.body.classList.remove('dragging');
-    drag.block.classList.remove('drag-origin');
+    if (drag.capture.hasPointerCapture(drag.pointerId)) drag.capture.releasePointerCapture(drag.pointerId);
+    document.body.classList.remove('dragging', 'drawing-appointment');
+    drag.capture.classList.remove('drag-origin');
     viewport.querySelectorAll('.drag-preview').forEach(node => node.remove());
   }
   window.addEventListener('pointercancel', cancel);

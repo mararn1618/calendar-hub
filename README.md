@@ -2,6 +2,10 @@
 
 A Mac calendar for TickTick tasks, Google appointments and read-only work meetings. Use Day, a Monday-to-Sunday Week or a rolling view of 1 to 31 days.
 
+## Create an appointment
+
+Drag from the start time to the end time on an empty part of the calendar. The preview snaps to 15 minutes. Release, enter a title, choose a Google calendar and press **Save**. You can drag across midnight or across several dates in the all-day row. **Escape** cancels the selection. Use **New item** to create a TickTick task or enter an appointment using the keyboard.
+
 ## Run on this Mac
 
 Install the dependencies with `npm ci`. Run `npm start` for the development app or `npm run package:mac` to build a standalone Mac app. Packaging requires the Xcode Command Line Tools. The Apple Silicon build opens from [Calendar Hub.app](<build/packaged/Calendar Hub-darwin-arm64/Calendar Hub.app>).

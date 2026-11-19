@@ -499,10 +499,15 @@ export function createPanels(actions) {
     const source = item && sourceOf(item);
     if (item && !source) return;
     const allowed = item ? editable(item, source) : true;
-    const choices = item ? [source] : state().sources.filter(source => source.selected && writable(source));
-    panel('editor', item ? (allowed ? 'Edit ' + (source.provider === 'ticktick' ? 'task' : 'event') : 'Item details') : 'New item');
+    const appointment = !item && defaults.kind === 'appointment';
+    const choices = item ? [source] : state().sources.filter(choice =>
+      choice.selected && writable(choice) && (!appointment || choice.provider === 'google'));
+    const newTitle = appointment ? 'New appointment' : 'New item';
+    panel('editor', item ? (allowed ? 'Edit ' + (source.provider === 'ticktick' ? 'task' : 'event') : 'Item details') : newTitle);
     if (!choices.length) {
-      body.append(element('p', '', 'Choose a writable TickTick list or Google calendar in Calendars to create an item.'));
+      body.append(element('p', '', appointment
+        ? 'Select a writable Google calendar in Manage calendars to create an appointment.'
+        : 'Choose a writable TickTick list or Google calendar in Calendars to create an item.'));
       footer.append(button('Cancel', close), button('Manage calendars', settings, 'primary'));
       return;
     }
@@ -522,7 +527,9 @@ export function createPanels(actions) {
     const initial = defaults.start ?? (day === localDate(now)
       ? Math.min(Math.ceil(now / (SLOT * MINUTE)) * SLOT * MINUTE, new Date(day + 'T23:45:00').getTime())
       : new Date(day + 'T09:00:00').getTime());
-    const original = item || (defaults.allDay ? { allDay: true, start: day, end: addDays(day, 1) } : { allDay: false, start: asISO(initial), end: asISO(initial + 30 * MINUTE) });
+    const original = item || (defaults.allDay
+      ? { allDay: true, start: day, end: defaults.end ?? addDays(day, 1) }
+      : { allDay: false, start: asISO(initial), end: asISO(defaults.end ?? initial + 30 * MINUTE) });
     const form = element('form', 'editor-form');
     form.id = 'item-form';
     const title = input('text', 'item-title', item?.title || '');
@@ -557,7 +564,7 @@ export function createPanels(actions) {
       }
     }
     destination.disabled = Boolean(item);
-    const destinationLabel = item ? (source.provider === 'ticktick' ? 'TickTick list' : 'Calendar') : 'Calendar or task list';
+    const destinationLabel = item || appointment ? (source?.provider === 'ticktick' ? 'TickTick list' : 'Calendar') : 'Calendar or task list';
     const destinationField = field(destinationLabel, destination);
     const location = element('span', 'help destination-context');
     destinationField.append(location);

@@ -47,3 +47,9 @@ The signed app loaded the native notification bridge and read its permission sta
 Version 0.3.1 passed all nine app journeys and 70 unit tests. Finder returned the new icon for the signed bundle. The 1024-pixel entry matched the source artwork pixel for pixel, and the sidebar displayed the same design. [Finder icon](../build/verification/finder-icon-128.png) · [Packaged app](../build/verification/desktop-2026-11-19T11-42-34-078Z/day-with-three-sources.png)
 
 On 19 November 2026 the Mac queued one local test notification. The app quit at 12:43:18 CET. At the scheduled time of 12:43:54 CET the system had no Calendar Central process running. A fresh launch confirmed the test identifier in the macOS list of delivered notifications. The test used an isolated profile and made no provider writes. [Delivery record](../build/verification/native-notification-delivery.json)
+
+## Calendar Hub 0.4.0
+
+The signed app identifies itself as Calendar Hub in Finder, the application menu and its window. macOS reported that notifications were allowed after the rename. The upgrade test opened an earlier Mac profile and recovered its encrypted Google and TickTick grants, saved view, filters and reminder settings. [Native name and permission check](../build/verification/calendar-hub-native.json)
+
+All 76 automated tests and ten packaged app journeys passed. Drawing from 08:12 to 09:04 produced a draft from 08:15 to 09:00. Saving it sent exactly one create to the selected Google calendar. Reverse drags, midnight, a three-day all-day range, Escape and dropping outside the grid also passed. The packaged journeys used isolated calendars. [Packaged run](../build/verification/desktop-2026-11-19T11-57-24-007Z/report.json) · [Timed preview](../build/verification/desktop-2026-11-19T11-57-24-007Z/drag-create-timed-preview.png) · [Appointment editor](../build/verification/desktop-2026-11-19T11-57-24-007Z/drag-create-appointment.png)

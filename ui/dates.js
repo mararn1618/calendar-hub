@@ -69,6 +69,26 @@ export function localMidnight(date) {
   return new Date(date + 'T00:00:00').getTime();
 }
 
+export function appointmentRange(anchor, target) {
+  if (!target || anchor.allDay !== target.allDay) return null;
+  const backwards = target.day < anchor.day || (target.day === anchor.day && target.instant < anchor.instant);
+  const [first, last] = backwards ? [target, anchor] : [anchor, target];
+  if (first.allDay) return { allDay: true, start: first.day, end: addDays(last.day, 1) };
+
+  const slot = SLOT * MINUTE;
+  function snap(point) {
+    const midnight = localMidnight(point.day);
+    return midnight + Math.round((point.instant - midnight) / slot) * slot;
+  }
+  let start = snap(first);
+  let end = snap(last);
+  if (start === end) {
+    if (end === localMidnight(addDays(last.day, 1)) || (backwards && start > localMidnight(first.day))) start -= slot;
+    else end += slot;
+  }
+  return { allDay: false, start: new Date(start).toISOString(), end: new Date(end).toISOString() };
+}
+
 export function possibleInstants(date, time) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) return [];
   const wallTime = Date.parse(`${date}T${time}:00Z`);

@@ -12,6 +12,7 @@ import { expandFolder, verifyTickTickCalendars } from './ticktick-calendars-e2e.
 import { verifyGoogleJourneys } from './google-journeys.mjs';
 import { verifyMacOnboarding } from './mac-onboarding-e2e.mjs';
 import { verifyNotificationJourneys } from './notification-journeys.mjs';
+import { verifyDragCreateJourneys } from './drag-create-journeys.mjs';
 
 const project = fileURLToPath(new URL('../', import.meta.url));
 const started = new Date().toISOString(), run = started.replaceAll(/[:.]/g, '-');
@@ -144,6 +145,9 @@ try {
   }
   const helpers = { provider, refresh, createItem, restart: () => driver.restart(), dragTo: options => driver.dragTo(options),
     screenshot: (page, name) => driver.screenshot(page, name) };
+  console.log('Draw appointments on the calendar');
+  page = await verifyDragCreateJourneys({ ...helpers, page });
+  report.passed.push('Draw timed and all-day appointment drafts, cancel without writes and save once to the selected Google calendar');
   console.log('TickTick account, list selection, folders and custom calendars');
   page = await verifyTickTickCalendars({ ...helpers, page });
   report.passed.push('One TickTick account, native folder and list order, remembered filters, folder split and named calendars writing to the original lists');

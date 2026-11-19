@@ -48,6 +48,16 @@ async function expectPreview(page, days) {
   assert.equal(await page.locator('dialog[open]').count(), 0, 'An editor opened before the pointer was released.');
 }
 
+export async function drawTimedAppointment(page, day, from, to, capturePreview) {
+  const start = await emptyPoint(page, day, from);
+  const end = await emptyPoint(page, day, to);
+  await drag(page, start, end, async () => {
+    await expectPreview(page, [day]);
+    if (capturePreview) await capturePreview();
+  });
+  return page.getByRole('dialog', { name: 'New appointment', exact: true });
+}
+
 async function expectDraft(page, { startDay, endDay = startDay, startTime, endTime, allDay = false }) {
   const draft = page.getByRole('dialog', { name: 'New appointment', exact: true });
   await draft.waitFor();
@@ -136,10 +146,7 @@ export async function verifyDragCreateJourneys({ page, provider, refresh, screen
   const title = 'Studio appointment from a drawn time range';
   const studio = provider.events.get(studioId);
   try {
-    await drag(page, await emptyPoint(page, day, '08:12'), await emptyPoint(page, day, '09:04'), async () => {
-      await expectPreview(page, [day]);
-      await screenshot(page, 'drag-create-timed-preview');
-    });
+    await drawTimedAppointment(page, day, '08:12', '09:04', () => screenshot(page, 'drag-create-timed-preview'));
     const draft = await expectDraft(page, times);
     await draft.getByLabel('Title', { exact: true }).fill(title);
     await screenshot(page, 'drag-create-appointment');

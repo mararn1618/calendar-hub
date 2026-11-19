@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createItem, DesktopDriver, until } from './desktop-driver.mjs';
+import { DesktopDriver, until } from './desktop-driver.mjs';
+import { drawTimedAppointment } from './drag-create-journeys.mjs';
 import { startMacCalendarFixture } from './fixtures/mac-calendar.mjs';
 
 const work = { id: 'bmw-exchange', name: 'BMW Work', accountName: 'BMW', writable: true };
@@ -76,11 +77,16 @@ export async function verifyMacOnboarding({ temporary, evidence }) {
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
 
     const title = 'Planning appointment';
-    await createItem(page, { title, calendar: google.name, allDay: false, day, hour: 11 });
+    const appointment = await drawTimedAppointment(page, day, '11:00', '11:30');
+    assert.equal(await appointment.getByLabel('Calendar', { exact: true }).locator('option:checked').textContent(), google.name);
+    await appointment.getByLabel('Title', { exact: true }).fill(title);
+    await driver.screenshot(page, 'mac-google-drawn-appointment');
+    await appointment.getByRole('button', { name: 'Save', exact: true }).click();
     await fixtureItem(page, title).waitFor();
     const created = [...fixture.events.values()].find(event => event.title === title);
     assert.equal(created?.providerCalendarId, google.id);
-    assert.equal(new Date(created.start).getHours(), 11);
+    assert.equal(Date.parse(created.start), Date.parse(day + 'T11:00:00'));
+    assert.equal(Date.parse(created.end), Date.parse(day + 'T11:30:00'));
     await fixtureItem(page, title).click();
     await dialog.getByLabel('Start time', { exact: true }).fill('12:00');
     await dialog.getByRole('button', { name: 'Save', exact: true }).click();

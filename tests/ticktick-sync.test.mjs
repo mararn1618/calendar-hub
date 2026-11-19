@@ -189,6 +189,24 @@ test('an automatic tick opens credentials only for a due connection after restar
   assert.deepEqual(w.calls.map(row => [row.name, row.kind]), [['Fast', 'tasks']]);
 });
 
+test('a failed OS permission check suspends the TickTick reminder timer until permission can be checked again', async t => {
+  const w = workspace(t);
+  await w.connect('Tasks', ['One']);
+  const [calendar] = (await w.state({ cachedOnly: true })).ticktickCalendars;
+  await w.setInterval(calendar.id, 1);
+  await w.run('setCalendarNotifications', { calendarId: calendar.id, enabled: true });
+  t.mock.timers.tick(minute);
+  w.calls.length = 0;
+  const authorize = w.center.authorization;
+  w.center.authorization = async () => { throw new Error('Notifications unavailable'); };
+  await w.run('refreshNotifications', { tickTickOnly: true });
+  assert.equal(w.service.nextTickTickNotificationCheckAt(), null);
+  assert.deepEqual(w.calls, []);
+  w.center.authorization = authorize;
+  await w.run('refreshNotifications');
+  assert.equal(w.service.nextTickTickNotificationCheckAt(), now + 2 * minute);
+});
+
 test('date chunks preserve successful coverage and stop at the first 429, including a zero-second delay', async t => {
   const w = workspace(t);
   await w.connect('Tasks', ['List']);

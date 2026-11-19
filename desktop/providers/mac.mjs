@@ -17,11 +17,16 @@ function runHelper(executable, args, input) {
   });
 }
 
-export function createMacCalendar({ executable, googleCalendarIds, executeHelper = runHelper }) {
-  const selected = Array.isArray(googleCalendarIds) ? new Set(googleCalendarIds) : null;
-  const mode = selected ? 'google' : 'mac';
+export function createMacCalendar({ executable, provider, accountId, googleCalendarIds, executeHelper = runHelper }) {
+  const mode = provider ?? (Array.isArray(googleCalendarIds) ? 'google' : 'mac');
+  const selected = mode === 'google' ? new Set(Array.isArray(googleCalendarIds) ? googleCalendarIds : []) : null;
+  const scoped = mode !== 'mac' && accountId !== undefined;
+  if (scoped && (typeof accountId !== 'string' || !accountId.length)) throw failure('INVALID', 'Choose an account on this Mac.');
+  const account = scoped ? { accountId } : {};
+  const scope = selected ? { ...account, googleCalendarIds: [...selected] } : account;
 
-  async function call(args, input) {
+  async function call(args, input, selection = scope) {
+    if (Object.keys(selection).length) args = [...args, JSON.stringify(selection)];
     let stdout;
     try { stdout = await executeHelper(executable, args, input); }
     catch (error) {
@@ -36,10 +41,19 @@ export function createMacCalendar({ executable, googleCalendarIds, executeHelper
   }
 
   function checkSource(source, write = false) {
+    if (write && mode !== 'google') throw failure('READ_ONLY', 'This Mac calendar is read-only.');
+    if ((mode === 'exchange' && !scoped) || (scoped && source?.accountId !== accountId)) {
+      throw failure('UNSELECTED', 'Choose a calendar from the connected account.');
+    }
     if (typeof source?.id !== 'string' || (selected && !selected.has(source.id))) {
       throw failure('UNSELECTED', 'Choose this calendar in the Google setup on this Mac.');
     }
-    if (write && (!selected || source.writable !== true)) throw failure('READ_ONLY', 'This Mac calendar is read-only.');
+    if (write && source.writable !== true) throw failure('READ_ONLY', 'This Mac calendar is read-only.');
+  }
+
+  function accountCalendars(rows) {
+    const calendars = scoped ? rows.filter(row => row.accountId === accountId) : rows;
+    return mode === 'google' ? calendars : calendars.map(row => ({ ...row, writable: false }));
   }
 
   async function write(action, source, original, draft, options = {}) {
@@ -60,14 +74,20 @@ export function createMacCalendar({ executable, googleCalendarIds, executeHelper
   }
 
   return {
-    authorize: ({ google = false } = {}) => call(['authorize', google ? 'google' : 'mac']),
+    async authorize({ google = false, requestAccess = true } = {}) {
+      const action = requestAccess ? 'authorize' : 'accounts';
+      if (google && mode === 'mac') return call([action, 'google'], undefined, {});
+      return accountCalendars(await call([action, mode], undefined, account));
+    },
     async sources() {
-      const rows = await call(['sources', mode]);
-      return selected ? rows.filter(row => selected.has(row.id)) : rows.map(row => ({ ...row, writable: false }));
+      if (mode === 'exchange' && !accountId) return [];
+      const calendars = accountCalendars(await call(['sources', mode]));
+      return selected ? calendars.filter(row => selected.has(row.id)) : calendars;
     },
     items(source, start, end) {
       checkSource(source);
-      return call(['items', mode, source.id, start, end]);
+      return call(['items', mode, source.id, start, end]).then(rows => mode === 'google' ? rows :
+        rows.map(row => ({ ...row, canEdit: false, canDelete: false, canComplete: false })));
     },
     create: (source, draft) => write('create', source, null, draft),
     update: (source, original, draft) => write('update', source, original, draft, draft),

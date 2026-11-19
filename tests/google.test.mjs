@@ -241,6 +241,7 @@ test('desktop OAuth signs in through loopback using state and PKCE, then refresh
       assert.equal(url.searchParams.get('client_secret'), null);
       assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
       assert.equal(url.searchParams.get('access_type'), 'offline');
+      assert.deepEqual(new Set(url.searchParams.get('prompt').split(' ')), new Set(['consent', 'select_account']));
       challenge = url.searchParams.get('code_challenge');
       granted = url.searchParams.get('scope');
       redirect = url.searchParams.get('redirect_uri');

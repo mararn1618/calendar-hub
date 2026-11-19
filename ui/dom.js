@@ -28,28 +28,73 @@ export function iconButton(label, symbol, action) {
   return node;
 }
 
-export const providers = { ticktick: 'TickTick', google: 'Google', mac: 'Mac calendars' };
+export function nativeAccountLabels(accounts) {
+  const byName = new Map();
+  for (const [id, name] of accounts) {
+    const ids = byName.get(name) || [];
+    ids.push(id);
+    byName.set(name, ids);
+  }
+  const labels = new Map();
+  for (const [name, ids] of byName) {
+    ids.sort();
+    ids.forEach((id, index) => labels.set(id, ids.length === 1 ? name : name + ' (' + (index + 1) + ')'));
+  }
+  return labels;
+}
+
+export function labelNativeSources(sources) {
+  const accounts = new Map();
+  const duplicates = new Map();
+  const sourceKey = source => JSON.stringify([source.connectionId, source.name]);
+  for (const source of sources) {
+    if (!source.nativeAccountId) continue;
+    accounts.set(source.nativeAccountId, source.nativeAccountName || 'Apple Calendar account');
+    const key = sourceKey(source);
+    duplicates.set(key, (duplicates.get(key) || 0) + 1);
+  }
+  const labels = nativeAccountLabels(accounts);
+  return sources.map(source => {
+    if (!source.nativeAccountId || duplicates.get(sourceKey(source)) < 2) return source;
+    return { ...source, name: source.name + ' · ' + labels.get(source.nativeAccountId) };
+  });
+}
+
+export function accountLabel(connection, connections) {
+  const name = connection.name || connection.providerName || connection.provider;
+  const sameName = connections.filter(row => (row.name || row.providerName || row.provider) === name);
+  const matches = sameName.filter(row => row.provider === connection.provider);
+  const label = matches.length > 1 ? name + ' (' + (matches.findIndex(row => row.id === connection.id) + 1) + ')' : name;
+  return sameName.length > matches.length ? label + ' (' + (connection.providerName || connection.provider) + ')' : label;
+}
+
+export function sourceContext(source, connections, calendarName) {
+  if (!source) return 'Calendar';
+  const connection = connections.find(row => row.id === source.connectionId);
+  const account = connection && accountLabel(connection, connections);
+  return [...new Set([account, calendarName, source.folder?.name, source.name].filter(Boolean))].join(' · ');
+}
 
 export function providerMark(provider) {
-  const mark = element('span', 'provider-mark ' + provider, { ticktick: '✓', google: 'G', mac: '▦' }[provider] || '•');
+  const mark = element('span', 'provider-mark ' + provider, { ticktick: '✓', google: 'G', exchange: 'E', mac: '▦' }[provider] || '•');
   mark.setAttribute('aria-hidden', 'true');
   return mark;
 }
 
 export function writable(source) {
-  return Boolean(source?.writable && !source.readOnly && ['ticktick', 'google'].includes(source.provider));
+  return Boolean(source?.writable && !source.readOnly);
 }
 
 export function editable(item, source) {
-  return Boolean(item?.canEdit && writable(source) && !(item.recurring && source.provider === 'ticktick'));
+  return Boolean(item?.canEdit && writable(source) && !(item.recurring && source.itemKind === 'task'));
 }
 
 export function completable(item, source) {
-  return Boolean(item?.canComplete && writable(source) && source.provider === 'ticktick' && !item.completed && !item.recurring);
+  return Boolean(item?.canComplete && writable(source) && source.itemKind === 'task' && !item.completed && !item.recurring);
 }
 
 export function deletable(item, source) {
-  return Boolean(item?.canDelete && writable(source) && source.provider === 'google');
+  return Boolean(item?.canDelete && writable(source) && source.itemKind === 'event');
 }
 
 export function sourceColor(source) {

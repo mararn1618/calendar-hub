@@ -12,11 +12,18 @@ Install the dependencies with `npm ci`. Run `npm start` for the development app 
 
 ## Connect calendars
 
+Open **Manage calendars** and choose a provider under **Add an account**. Repeat for each Google, TickTick or Exchange account. You can name accounts **Work** and **Personal**, for example. The sidebar, new-item picker and account settings use these names. **Rename** changes the local label. **Disconnect** removes that account from Calendar Hub.
+
 - **TickTick**. Choose **Manage calendars → Connect TickTick → Continue with TickTick**. Approve task access in your browser. Your account appears as one calendar. Each new connection includes Inbox and all active task lists. Existing connections keep their list selection. Use **Reconnect** to renew access. A personal API token is also available as a manual option. [TickTick authorization service](https://ticktick.com/.well-known/oauth-authorization-server) · [Task permissions](https://developer.ticktick.com/docs/openapi.md)
-- **Google on this Mac**. Choose **Connect Google → Choose Google calendars on this Mac**. Allow calendar access, then pick calendars under your Google account. If Google is missing, choose **Open Internet Accounts**, add Google, turn on **Calendars**, and choose **Check again**. A newly created Google calendar can take a few minutes to appear. Apple Calendar syncs your event changes to Google. [Apple’s calendar account guide](https://support.apple.com/guide/calendar/add-or-delete-calendar-accounts-icl4308d6701/mac)
+- **Google on this Mac**. Choose **Connect Google Calendar → Choose Google calendars on this Mac**. Apple lists its CalDAV accounts here, including iCloud. Select the account you set up with Google and pick its calendars. Repeat for another Google account. If an account is missing, choose **Open Internet Accounts**, add Google, turn on **Calendars**, then choose **Check again**. Apple Calendar syncs changes to the selected account. [Apple’s calendar account guide](https://support.apple.com/guide/calendar/add-or-delete-calendar-accounts-icl4308d6701/mac)
+- **Exchange on this Mac**. Choose **Connect Exchange** and select the work account you use in Apple Calendar. Its calendars appear under that account and its meetings are read-only. Repeat for another Exchange account.
 - **Work meetings**. Select one Google copy and mark it **Read-only**, or choose **Connect Mac calendars** to display meetings from Apple Calendar as read-only. Leave the separate Google calendar of TickTick copies unchecked to show the original tasks once.
 
-For a build that connects directly to the Google Calendar API, the app publisher enables that API, registers one **Desktop app** OAuth client and sets `CALENDAR_HUB_GOOGLE_DESKTOP_CONFIG` to the downloaded JSON file when running `npm run package:mac`. For an external project in Testing, the publisher adds the testers in **Google Auth Platform → Audience → Test users**. Users then choose **Continue with Google** and approve calendar access in their browser. A self-built installation can also load its desktop client once in **Connect Google**. [Google desktop authorization](https://developers.google.com/identity/protocols/oauth2/native-app) · [Consent screen setup](https://developers.google.com/workspace/guides/configure-oauth-consent)
+For a build that connects directly to the Google Calendar API, the app publisher enables that API, registers one **Desktop app** OAuth client and sets `CALENDAR_HUB_GOOGLE_DESKTOP_CONFIG` to the downloaded JSON file when running `npm run package:mac`. For an external project in Testing, the publisher adds the testers in **Google Auth Platform → Audience → Test users**. Users choose **Continue with Google** and select their account in the browser. The same desktop client works for each account. A self-built installation can also load its desktop client once in **Connect Google Calendar**. [Google desktop authorization](https://developers.google.com/identity/protocols/oauth2/native-app) · [Consent screen setup](https://developers.google.com/workspace/guides/configure-oauth-consent)
+
+Older Google connections through Apple Calendar split into accounts when the Mac can identify the owner of each saved calendar. Selections, hidden events, reminder settings and pending edits follow their calendars.
+
+Use one Google sign-in route per account to see its calendars once. TickTick uses the private Inbox to recognize an account when its access token changes. If TickTick cannot identify an empty Inbox, Calendar Hub keeps the saved connection and lets you add a separate one.
 
 Calendar Hub uses the existing profile at `~/Library/Application Support/Calendar Central` so that upgrades retain connected accounts, list selections and reminder settings. Provider credentials are encrypted using macOS keychain-backed storage. In the calendar, right-click an appointment to hide it locally. **Hidden items** restores it. **Delete from Google** asks for confirmation before changing the source.
 
@@ -35,6 +42,10 @@ Click the bell beside a calendar to turn its Mac notifications on or off. Calend
 Right-click the bell to choose a lead time, or open its notification settings under **Manage calendars** to enter a number of minutes. Zero means at the start. A calendar can send notifications while hidden from the timeline. These settings apply only to Calendar Hub.
 
 The app schedules the next seven days of reminders with macOS, up to the nearest 64. Scheduled reminders can fire after you quit. Reopen the app to pick up source changes and fill the next week. A daily summary for all-day items is planned separately.
+
+## Add a provider
+
+Register its display name, item kind, sign-in routes and three methods. `authorize` obtains a grant, `identity` identifies the account and `client` creates an adapter for that grant. The adapter exposes `sources`, `items` and the write operations it supports. Calendar Hub stores each connection separately and sends edits to the connection that owns the selected calendar or list. [Built-in integrations](desktop/providers/integrations.mjs) · [Registry](desktop/providers/registry.mjs)
 
 ## Verify
 

@@ -196,6 +196,83 @@ test('searches long Inbox ranges without gaps, deduplicates tasks and completes 
   assert.equal(completed.completed, true)
 })
 
+test('account identity uses a published private Inbox or queries only that local day', async () => {
+  const published = api(({ path }) => {
+    assert.equal(path, '/project')
+    return response([{ id: 'inbox47', name: 'Inbox' }])
+  })
+  await published.client.sources()
+  assert.equal(await published.client.accountInboxId(day.start), 'inbox47')
+  assert.equal(published.calls.length, 1)
+
+  const account = api(({ path, body }) => {
+    if (path === '/project') return response([inbox, source])
+    assert.equal(path, '/task/undone')
+    assert.deepEqual(body.projectIds, ['inbox'])
+    assert.equal(body.startDate, '2026-10-25T00:00:00+0200')
+    assert.equal(body.endDate, '2026-10-25T23:59:59.999+0100')
+    return response([{ ...original, projectId: 'inbox84' }])
+  })
+  await account.client.sources()
+  assert.deepEqual(account.calls.map(call => call.path), ['/project'])
+  assert.equal(await account.client.accountInboxId(day.start), 'inbox84')
+  assert.equal(await account.client.accountInboxId(day.end), 'inbox84')
+  assert.deepEqual(account.calls.map(call => call.path), ['/project', '/task/undone'])
+})
+
+test('an empty Inbox or an alias does not identify an account, and conflicting IDs are never cached', async () => {
+  let tasks = [{ ...original, projectId: 'inbox1' }, { ...original, projectId: 'inbox2' }]
+  const { client } = api(({ path }) => {
+    assert.equal(path, '/task/undone')
+    return response(tasks)
+  })
+  await assert.rejects(client.accountInboxId(day.start), /different Inbox identifiers/)
+  tasks = []
+  assert.equal(await client.accountInboxId(day.start), undefined)
+  tasks = [{ ...original, projectId: 'inbox' }]
+  assert.equal(await client.accountInboxId(day.start), undefined)
+})
+
+test('a new grant can verify a previously recorded private Inbox by its exact project ID', async () => {
+  const { client, calls } = api(({ method, path }) => {
+    assert.equal(method, 'GET')
+    assert.equal(path, '/project/inbox47')
+    return response({ id: 'inbox47', name: 'Eingang' })
+  })
+  assert.equal(await client.accountInboxId(day.start, 'inbox47'), 'inbox47')
+  assert.equal(await client.accountInboxId(day.end), 'inbox47')
+  assert.equal(calls.length, 1)
+})
+
+test('an unverified private project falls back to the current grant’s Inbox', async () => {
+  for (const project of [response(null, 404), response(null, 403), response(null), response({ tasks: [] }),
+    response({ id: 'inbox' }), response({ id: 'inbox84' })]) {
+    const { client, calls } = api(({ path, body }) => {
+      if (path === '/project/inbox47') return project
+      assert.equal(path, '/task/undone')
+      assert.deepEqual(body.projectIds, ['inbox'])
+      return response([])
+    })
+    assert.equal(await client.accountInboxId(day.start, 'inbox47'), undefined)
+    assert.deepEqual(calls.map(call => call.path), ['/project/inbox47', '/task/undone'])
+  }
+  const rejected = api(() => response(null, 401))
+  await assert.rejects(rejected.client.accountInboxId(day.start, 'inbox47'), { code: 'AUTH_REQUIRED' })
+  assert.equal(rejected.calls.length, 1)
+})
+
+test('the actual Inbox identifies a different account even when a saved ID was supplied', async () => {
+  const account = api(({ path }) => path === '/project/inbox47' ? response(null, 404) : response([{ ...original, projectId: 'inbox84' }]))
+  assert.equal(await account.client.accountInboxId(day.start, 'inbox47'), 'inbox84')
+  assert.equal(await account.client.accountInboxId(day.end, 'inbox47'), 'inbox84')
+  assert.deepEqual(account.calls.map(call => call.path), ['/project/inbox47', '/task/undone'])
+  const alias = api(({ path }) => {
+    assert.equal(path, '/task/undone')
+    return response([])
+  })
+  assert.equal(await alias.client.accountInboxId(day.start, 'inbox'), undefined)
+})
+
 test('uses the published Inbox project ID for creation or verifies the alias by ID within Inbox', async () => {
   const draft = { title: 'Follow up', allDay: true, ...day }
   const published = api(({ path, body }) => {

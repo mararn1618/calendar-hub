@@ -513,6 +513,8 @@ test('TickTick reconnect replaces a rotated token and keeps the account, choices
   registry.authorize = async input => ({ token: input.token || 'rotated-token', clientId: 'same-desktop-client' });
   registry.identity = (_provider, secret) => secret.token;
   registry.client = (_provider, { token }) => ({
+    accountInboxId: async () => ({ 'old-token': 'inbox123', 'rotated-token': 'inbox123',
+      'other-saved-token': 'inbox456', 'different-token': 'inbox789' })[token],
     sources: async () => [{ id: 'inbox', name: 'Inbox', writable: true, inbox: true },
       ...projects[token].map(id => ({ id, name: id, writable: true }))],
     items: remote.items,
@@ -545,12 +547,13 @@ test('TickTick reconnect replaces a rotated token and keeps the account, choices
   assert.equal(profile.data.connections[1].secret.token, 'other-saved-token');
 
   await assert.rejects(restored.run('connect', { provider: 'ticktick', connectionId, token: 'other-saved-token' }), /already connected/);
-  await assert.rejects(restored.run('connect', { provider: 'ticktick', connectionId, token: 'different-token' }), /could not match the task lists/);
+  await assert.rejects(restored.run('connect', { provider: 'ticktick', connectionId, token: 'different-token' }), /could not verify the Inbox/);
   assert.deepEqual(profile.data.connections.map(entry => entry.secret.token), ['rotated-token', 'other-saved-token']);
 });
 
 test('TickTick reconnect cannot overwrite a grant saved while consent was open', async () => {
-  const { dates, profile, registry, service } = workspace();
+  const { dates, profile, registry, remote, service } = workspace();
+  remote.accountInboxId = async () => 'inbox123';
   const slow = Promise.withResolvers();
   registry.identity = (_provider, secret) => secret.token;
   registry.authorize = async ({ token }) => {
@@ -581,7 +584,7 @@ test('a published TickTick Inbox ID can confirm an account or reject a different
   const connectionId = connections[0].id;
   const sourceId = sources.find(source => source.name === 'Inbox').id;
   await service.run('setSource', { sourceId, selected: true });
-  await assert.rejects(service.run('connect', { provider: 'ticktick', connectionId, token: 'wrong-account' }), /could not match/);
+  await assert.rejects(service.run('connect', { provider: 'ticktick', connectionId, token: 'wrong-account' }), /could not verify the Inbox/);
   await service.run('connect', { provider: 'ticktick', connectionId, token: 'new-token' });
   const view = await service.run('state', dates);
   assert.deepEqual(view.connections, connections);
@@ -601,4 +604,39 @@ test('additional Google accounts reuse a previously configured desktop app ID', 
   await service.run('connect', { provider: 'google' });
   assert.deepEqual(authorizations, ['my-desktop-app', 'my-desktop-app']);
   assert.doesNotMatch(JSON.stringify(await service.run('state', dates)), /my-desktop-app|test-desktop-value/);
+});
+
+test('a list shared by two TickTick users cannot replace either account during reconnect', async () => {
+  const { dates, profile, remote, registry, service } = workspace();
+  registry.authorize = async ({ token }) => ({ token });
+  registry.identity = (_provider, secret) => secret.token;
+  remote.sources = async () => [tickList('inbox'), tickList('shared')];
+  remote.accountInboxId = async () => undefined;
+  await service.run('connect', { provider: 'ticktick', token: 'one' });
+  const original = profile.data.connections[0];
+  await assert.rejects(service.run('connect', { provider: 'ticktick', connectionId: original.id, token: 'two' }), /could not verify the Inbox/);
+  assert.equal(original.secret.token, 'one');
+  await service.run('connect', { provider: 'ticktick', token: 'two' });
+  const view = await service.run('state', dates);
+  assert.notEqual(view.connections[0].id, view.connections[1].id);
+  assert.equal(view.sources.filter(source => source.name === 'shared').length, 2);
+});
+
+test('a legacy TickTick grant can reconnect using the owner of an original cached Inbox task', async () => {
+  const { dates, profile, remote, registry, service } = workspace();
+  registry.authorize = async ({ token }) => ({ token });
+  registry.identity = (_provider, secret) => secret.token;
+  remote.sources = async () => [tickList('inbox')];
+  remote.items = async () => [{ id: 'previous-task', title: 'Task', ...dates, allDay: true,
+    version: 'one', _ticktick: { projectId: 'inbox123' } }];
+  await service.run('connect', { provider: 'ticktick', token: 'old' });
+  const [connection] = (await service.run('state', dates)).connections;
+  delete profile.data.connections[0].tickTickInboxId;
+  let checkedDay;
+  remote.accountInboxId = async day => { checkedDay = day; return 'inbox123'; };
+  const restored = new CalendarService(profile, registry);
+  await restored.run('connect', { provider: 'ticktick', token: 'new', connectionId: connection.id });
+  assert.equal(checkedDay, dates.start);
+  assert.equal(profile.data.connections[0].id, connection.id);
+  assert.equal(profile.data.connections[0].secret.token, 'new');
 });

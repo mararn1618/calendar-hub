@@ -1,5 +1,6 @@
-import { $, button, completable, deletable, editable, element, errorText, healthFor, icon, iconButton, providerMark, providers, sourceCheckbox, tickTickCalendarCheckbox, writable } from './dom.js';
+import { $, accountLabel, button, completable, deletable, editable, element, errorText, healthFor, icon, iconButton, providerMark, sourceContext, sourceCheckbox, tickTickCalendarCheckbox, writable } from './dom.js';
 import { MINUTE, SLOT, addDays, differenceInDays, formatDate, localDate, localTime, possibleInstants, zoneOffset } from './dates.js';
+import { showMacAccountPicker, showRetainedCalendars } from './mac-account-picker.js';
 import { createTickTickEditor } from './ticktick-editor.js';
 import { listCount, tickTickSections } from './ticktick-lists.js';
 
@@ -73,9 +74,12 @@ export function createPanels(actions) {
   let busy = false;
   const pendingNotifications = new Set();
   const state = () => actions.state();
+  const integration = id => state().connectionOptions?.integrations.find(row => row.id === id);
+  const providerName = id => integration(id)?.name || id;
+  const brandName = id => id === 'google' ? 'Google' : providerName(id);
   const notificationsFor = id => state().notificationPreferences?.[id] || defaultNotifications;
   const sourceOf = item => state().sources.find(source => source.id === item.sourceId);
-  const viaAppleCalendar = data => state().connections.some(connection => connection.id === sourceOf(data)?.connectionId && connection.route === 'mac');
+  const viaAppleCalendar = data => state().connections.some(connection => connection.id === sourceOf(data)?.connectionId && connection.provider === 'google' && connection.route === 'mac');
   const latestItem = item => state().items.find(entry => entry.id === item.id && entry.sourceId === item.sourceId);
   const hasPendingCreate = ({ sourceId, title }) => state().uncertain.some(row =>
     row.kind === 'create' && row.sourceId === sourceId && row.title === title);
@@ -155,18 +159,41 @@ export function createPanels(actions) {
     const focused = kind === 'settings' && document.activeElement.id;
     panel('settings', 'Calendars', { wide: true });
     const { connections, sources, ticktickCalendars, health } = state();
+    body.append(element('h3', 'settings-subhead', 'Add an account'));
+    const options = element('div', 'provider-options');
+    for (const { id, name, available } of state().connectionOptions?.integrations || []) {
+      if (!available) continue;
+      const connect = button('', () => connectionForm(id), 'provider-button');
+      connect.setAttribute('aria-label', 'Connect ' + name);
+      connect.append(providerMark(id), document.createTextNode(name), icon('plus'));
+      options.append(connect);
+    }
+    body.append(options);
     if (connections.length) {
-      body.append(element('p', 'help', 'Choose the calendars and task lists to show. Keep the TickTick copy calendar off when its original list is selected.'));
+      const help = connections.some(row => row.provider === 'ticktick')
+        ? 'Choose the calendars and task lists to show. Keep the TickTick copy calendar off when its original list is selected.'
+        : 'Choose the calendars to show.';
+      body.append(element('p', 'help', help));
     }
     for (const connection of connections) {
       const group = element('section', 'connection-group');
+      const label = accountLabel(connection, connections);
+      group.dataset.connectionId = connection.id;
+      group.setAttribute('aria-label', label);
       const heading = element('div', 'connection-heading');
       const name = element('div', 'connection-name');
-      name.append(providerMark(connection.provider), element('strong', '', connection.name || providers[connection.provider]));
-      heading.append(name);
-      if (connection.route === 'mac') heading.append(button('Choose calendars', chooseMacGoogleCalendars, 'text-button'));
-      if (connection.provider === 'ticktick') heading.append(button('Reconnect', () => connectionForm('ticktick', connection), 'text-button'));
-      heading.append(button('Disconnect', () => disconnect(connection), 'text-button subdued'));
+      const provider = providerMark(connection.provider);
+      provider.title = providerName(connection.provider);
+      name.append(provider, element('strong', '', label));
+      const controls = element('div', 'connection-controls');
+      if (connection.provider === 'google' && connection.route === 'mac') {
+        controls.append(button('Choose calendars', () => chooseMacAccount('google', connection), 'text-button'));
+      } else if (connection.provider === 'google' || integration(connection.provider)?.routes.some(route => route === 'browser' || route === 'token')) {
+        controls.append(button('Reconnect', () => connectionForm(connection.provider, connection), 'text-button'));
+      }
+      controls.append(button('Rename', () => renameConnection(connection), 'text-button'),
+        button('Disconnect', () => disconnect(connection), 'text-button subdued'));
+      heading.append(name, controls);
       group.append(heading);
       const listed = sources.filter(source => source.connectionId === connection.id);
       if (connection.provider === 'ticktick') {
@@ -193,7 +220,7 @@ export function createPanels(actions) {
         row.dataset.sourceId = source.id;
         const status = healthFor(source, health);
         row.append(sourceCheckbox(source, selected => setSource(source, { selected }), status));
-        if (source.provider === 'google' && source.writable) {
+        if (source.writable) {
           const policy = check('Read-only', source.readOnly);
           policy.row.classList.add('readonly-control');
           policy.control.setAttribute('aria-label', 'Read-only ' + source.name);
@@ -204,22 +231,8 @@ export function createPanels(actions) {
         if (status && status.state !== 'current' && status.message) row.append(element('p', 'source-error', status.message));
         group.append(row);
       }
-      if (connection.provider === 'google' && listed.some(source => source.writable)) {
-        group.append(element('p', 'help policy-help', 'Mark a BMW copy read-only to keep its meetings protected.'));
-      }
       body.append(group);
     }
-    body.append(element('h3', 'settings-subhead', 'Add a connection'));
-    const options = element('div', 'provider-options');
-    for (const [provider, label] of Object.entries(providers)) {
-      if (provider === 'mac' && !state().connectionOptions?.macCalendars) continue;
-      const connect = button('', () => connectionForm(provider), 'provider-button');
-      const title = provider === 'mac' ? 'Connect Mac calendars' : 'Connect ' + label;
-      connect.setAttribute('aria-label', title);
-      connect.append(providerMark(provider), document.createTextNode(label), icon('plus'));
-      options.append(connect);
-    }
-    body.append(options);
     footer.append(button('Hidden items', hiddenItems, 'text-button'), button('Done', close, 'primary'));
     body.scrollTop = scroll;
     if (focused) document.getElementById(focused)?.focus({ preventScroll: true });
@@ -296,7 +309,7 @@ export function createPanels(actions) {
     lead.max = '10080';
     lead.step = '1';
     lead.required = true;
-    form.append(element('strong', 'settings-subhead', calendar.name), toggle.row, field('Minutes before start', lead),
+    form.append(element('strong', 'settings-subhead', sourceContext(calendar, state().connections)), toggle.row, field('Minutes before start', lead),
       element('p', 'help', 'Use 0 to be notified when a timed item starts.'));
     form.addEventListener('submit', event => {
       event.preventDefault();
@@ -353,104 +366,154 @@ export function createPanels(actions) {
   }
   function disconnect(connection) {
     panel('disconnect', 'Disconnect calendar?', { back: settings });
-    body.append(element('p', '', 'Remove ' + (connection.name || providers[connection.provider]) + ' from Calendar Hub? Its tasks and events stay with the provider.'));
+    body.append(element('p', '', 'Remove ' + (connection.name || providerName(connection.provider)) + ' from Calendar Hub? Its tasks and events stay with the provider.'));
     footer.append(button('Cancel', settings), button('Disconnect', () => write('disconnect', { connectionId: connection.id }, settings), 'destructive'));
   }
-  function connectionForm(provider, connection) {
-    const name = providers[provider];
-    const title = connection ? 'Reconnect ' + name : 'Connect ' + name;
-    panel('connect', title, { back: settings });
+  function renameConnection(connection) {
+    panel('rename', 'Rename account', { back: settings });
+    const form = element('form', 'editor-form');
+    form.id = 'rename-form';
+    const name = input('text', 'account-name', connection.name);
+    name.required = true;
+    form.append(field('Account name', name));
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      if (!name.value.trim()) return warning('Enter an account name.');
+      write('renameConnection', { connectionId: connection.id, name: name.value.trim() }, settings);
+    });
+    const save = element('button', 'primary', 'Save');
+    save.type = 'submit';
+    save.setAttribute('form', form.id);
+    body.append(form);
+    footer.append(button('Cancel', settings), save);
+    name.select();
+  }
+  function optionalName(value = '') {
+    const name = input('text', 'connection-name', value);
+    name.placeholder = 'e.g. Work';
+    return name;
+  }
+  function connectionForm(provider, connection, initialName = '') {
+    if (provider === 'exchange') return chooseMacAccount(provider);
+    const routes = integration(provider)?.routes || [];
+    if (routes.includes('token') && !routes.includes('browser')) return advancedConnection(provider, connection, initialName, 'token');
+    const name = providerName(provider);
+    panel('connect', (connection ? 'Reconnect ' : 'Connect ') + name, { back: settings });
     footer.append(button('Back', settings));
+    const accountName = !connection && provider !== 'mac' ? optionalName(initialName) : null;
+    const values = () => connection ? { provider, connectionId: connection.id } :
+      { provider, ...(accountName?.value.trim() && { name: accountName.value.trim() }) };
     if (provider === 'ticktick') {
-      const help = connection ? 'Sign in with the same TickTick account to keep your calendar selections for ' + connection.name + '.' :
-        'Sign in at TickTick and allow Calendar Hub to read and update your tasks.';
-      body.append(element('p', 'help', help),
-        button('Use a personal token', () => advancedConnection(provider, connection), 'text-button'));
-      footer.append(button('Continue with TickTick', () => finishConnection({ provider, connectionId: connection?.id }), 'primary'));
+      body.append(element('p', 'help', connection ? 'Sign in with the same TickTick account to keep the lists and settings for ' + connection.name + '. A dated Inbox task can help TickTick identify your account.' :
+        'Sign in at TickTick and allow Calendar Hub to read and update your tasks.'));
+      if (accountName) body.append(field('Account name (optional)', accountName));
+      body.append(button('Use a personal token', () => advancedConnection(provider, connection, accountName?.value, 'token'), 'text-button'));
+      footer.append(button('Continue with TickTick', () => finishConnection(values()), 'primary'));
     } else if (provider === 'mac') {
       body.append(element('p', 'help', 'Show meetings from Apple Calendar as read-only. Allow Calendar Hub to read your calendars when macOS asks.'));
-      footer.append(button('Choose Mac calendars', () => finishConnection({ provider }), 'primary'));
-    } else {
-      const { googleBrowser, macCalendars, googleConfigError } = state().connectionOptions || {};
-      if (googleBrowser) {
-        body.append(element('p', 'help', 'Sign in at Google and choose the calendars to show here.'));
-        footer.append(button('Continue with Google', () => finishConnection({ provider }), 'primary'));
-        if (macCalendars) body.append(button('Use Google from Apple Calendar', chooseMacGoogleCalendars, 'text-button'));
+      footer.append(button('Choose Mac calendars', () => finishConnection(values()), 'primary'));
+    } else if (provider === 'google') {
+      const { googleBrowser, macCalendars, googleConfigError } = state().connectionOptions;
+      const nativePicker = () => chooseMacAccount(provider, undefined, accountName?.value);
+      if (googleBrowser || connection) {
+        body.append(element('p', 'help', connection ? 'Sign in to the same Google account to reconnect ' + connection.name + '.' :
+          'Sign in at Google and choose the calendars to show here.'));
+        if (accountName) body.append(field('Account name (optional)', accountName));
+        footer.append(button('Continue with Google', () => finishConnection(values()), 'primary'));
+        if (macCalendars && !connection) body.append(button('Use Google from Apple Calendar', nativePicker, 'text-button'));
       } else if (macCalendars) {
-        body.append(element('p', 'help', 'Use the Google account in Apple Calendar. You can add a Google account in Mac System Settings.'));
-        footer.append(button('Choose Google calendars on this Mac', chooseMacGoogleCalendars, 'primary'));
+        body.append(element('p', 'help', 'Choose a Google account from Apple Calendar. You can add another account in Mac System Settings.'));
+        footer.append(button('Choose Google calendars on this Mac', nativePicker, 'primary'));
       }
-      body.append(button('Use your own Google desktop client', () => advancedConnection(provider), 'text-button'));
+      body.append(button('Use your own Google desktop client', () => advancedConnection(provider, connection, accountName?.value, 'custom'), 'text-button'));
       if (googleConfigError && !googleBrowser) warning(googleConfigError);
+    } else if (routes.includes('browser')) {
+      body.append(element('p', 'help', connection ? 'Sign in to the same account to reconnect ' + connection.name + '.' :
+        'Sign in at ' + name + ' to choose what to show in Calendar Hub.'));
+      if (accountName) body.append(field('Account name (optional)', accountName));
+      if (routes.includes('token')) body.append(button('Use an access token', () => advancedConnection(provider, connection, accountName?.value, 'token'), 'text-button'));
+      footer.append(button('Continue with ' + name, () => finishConnection({ ...values(), route: 'browser' }), 'primary'));
+    } else {
+      warning('No sign-in method is available for ' + name + '.');
     }
   }
   function finishConnection(values) {
     write('connect', values, () => {
       settings();
-      actions.toast((values.connectionId ? 'Reconnected to ' : 'Connected to ') + providers[values.provider]);
+      actions.toast(values.connectionId && values.route === 'mac' ? 'Calendar selection saved' :
+        (values.connectionId ? 'Reconnected to ' : 'Connected to ') + providerName(values.provider));
     });
   }
-  async function chooseMacGoogleCalendars() {
-    const back = () => connectionForm('google');
-    panel('mac-google', 'Choose Google calendars', { back });
+  async function chooseMacAccount(provider, connection, initialName = '') {
+    const google = provider === 'google';
+    const brand = google ? 'Google' : 'Exchange';
+    const name = connection ? null : optionalName(initialName);
+    const back = connection || !google ? settings : () => connectionForm(provider, undefined, name?.value);
+    panel('mac-account', google ? 'Choose Google calendars' : 'Connect Exchange', { back });
     const target = body;
     body.append(element('p', 'help', 'Looking for accounts in Apple Calendar…'));
     footer.append(button('Back', back));
+    const retry = () => chooseMacAccount(provider, connection, name?.value);
     const openAccounts = button('Open Internet Accounts', async () => {
       try { await window.calendar.openInternetAccounts(); }
       catch (error) { warning(errorText(error)); }
     }, 'text-button');
-    let options;
-    try { options = await window.calendar.macGoogleCalendars(); }
+    let rows;
+    try { rows = await window.calendar.macAccountCalendars({ provider, ...(connection && { connectionId: connection.id }) }); }
     catch (error) {
       if (body !== target || !dialog.open) return;
       body.replaceChildren();
       if (error.code === 'PERMISSION') body.append(element('p', 'help', 'Allow Calendar Hub in System Settings under Privacy & Security → Calendars.'));
-      footer.append(button('Check again', chooseMacGoogleCalendars));
+      footer.append(button('Check again', retry));
       warning(errorText(error));
       return;
     }
     if (body !== target || !dialog.open) return;
-    if (!options.length) {
-      body.replaceChildren(element('p', 'help', 'Add Google in System Settings → Internet Accounts, turn on Calendars, then check again.'), openAccounts);
-      footer.append(button('Check again', chooseMacGoogleCalendars, 'primary'));
+    const available = rows.filter(row => !row.unavailable);
+    const retained = connection && google ? rows.filter(row => row.unavailable && row.chosen) : [];
+    const missingAccount = connection && (connection.legacyMac ? !available.length :
+      !available.some(row => row.accountId === connection.accountId));
+    if (missingAccount || !available.length || !connection && available.every(row => row.connected)) {
+      let help = 'Add ' + brand + ' in System Settings → Internet Accounts, turn on Calendars, then check again.';
+      if (missingAccount) help = 'This account is unavailable in Apple Calendar. Check its Internet Accounts settings and turn on Calendars.';
+      else if (available.length) help = 'These accounts are already connected. To add another ' + brand + ' account, open Internet Accounts and turn on Calendars.';
+      body.replaceChildren(element('p', 'help', help));
+      showRetainedCalendars(body, retained, connection?.legacyMac);
+      body.append(openAccounts);
+      footer.append(button('Check again', retry, 'primary'));
       return;
     }
-    body.replaceChildren(element('p', 'help', 'Choose the calendars under your Google account. If Google is missing, add it in Internet Accounts and turn on Calendars. Apple Calendar syncs your changes to Google.'));
-    const selected = new Set(options.filter(option => option.chosen).map(option => option.id));
-    const connect = button('Use selected calendars', () => finishConnection({ provider: 'google', route: 'mac', googleCalendarIds: [...selected] }), 'primary');
-    connect.disabled = !selected.size;
-    for (const option of options) {
-      const label = [option.accountName, option.name].filter(Boolean).join(' · ') + (option.writable ? '' : ' (read-only)');
-      const choice = check(label, selected.has(option.id));
-      choice.control.addEventListener('change', () => {
-        if (choice.control.checked) selected.add(option.id);
-        else selected.delete(option.id);
-        connect.disabled = !selected.size;
-      });
-      body.append(choice.row);
-    }
-    body.append(openAccounts, button('Check again', chooseMacGoogleCalendars, 'text-button'));
-    footer.append(connect);
+    const help = connection ? 'Choose the Google calendars for ' + accountLabel(connection, state().connections) + '.' :
+      google ? 'Apple Calendar also lists other CalDAV accounts, including iCloud. Choose the account you use with Google, then select its calendars.' :
+        'Choose an Exchange account from Apple Calendar. Its calendars are read-only in Calendar Hub.';
+    body.replaceChildren(element('p', 'help', help));
+    showMacAccountPicker({ body, footer, provider, connection, rows: available, retained, nameField: name, connect: finishConnection });
+    showRetainedCalendars(body, retained, connection?.legacyMac);
+    if (name) body.append(field('Account name (optional)', name));
+    const more = element('div', 'mac-account-tools');
+    more.append(openAccounts, button('Check again', retry, 'text-button'));
+    body.append(more);
   }
-  function advancedConnection(provider, connection) {
-    const name = providers[provider];
-    const back = () => connectionForm(provider, connection);
-    panel('connect-advanced', provider === 'ticktick' ? 'Use a TickTick token' : 'Use a Google desktop client', { back });
+  function advancedConnection(provider, connection, initialName, route) {
+    const connectionName = connection ? null : optionalName(initialName);
+    const back = route === 'token' && !integration(provider).routes.includes('browser') ? settings :
+      () => connectionForm(provider, connection, connectionName?.value);
+    const title = route === 'token' ? (provider === 'ticktick' ? 'Use a TickTick token' : providerName(provider) + ' access token') : 'Use a Google desktop client';
+    panel('connect-advanced', title, { back });
     const form = element('form', 'editor-form');
     form.id = 'connect-form';
-    const connectionName = connection ? null : input('text', 'connection-name');
-    if (connectionName) {
-      connectionName.placeholder = name;
-      form.append(field('Connection name (optional)', connectionName));
-    }
+    if (connectionName) form.append(field('Account name (optional)', connectionName));
     let token, clientId, secret;
-    if (provider === 'ticktick') {
+    if (route === 'token') {
       token = input('password', 'access-token');
       token.autocomplete = 'off';
+      token.spellcheck = false;
+      token.autocapitalize = 'none';
       token.required = true;
-      form.append(field('Access token', token), element('p', 'help', 'Use a TickTick Open API access token with task read and write access.'));
-    } else if (provider === 'google') {
+      form.append(field('Access token', token));
+      if (provider === 'ticktick') form.append(element('p', 'help', 'Use a TickTick Open API access token with task read and write access.'));
+      if (connection) form.append(element('p', 'help', 'Use a token for the same account to reconnect ' + connection.name + '.'));
+    } else {
       clientId = input('text', 'client-id');
       clientId.required = true;
       clientId.spellcheck = false;
@@ -481,8 +544,11 @@ export function createPanels(actions) {
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (!form.reportValidity()) return;
-      const values = { provider, route: provider === 'ticktick' ? 'token' : 'browser', name: connectionName?.value.trim() || undefined, connectionId: connection?.id };
-      if (token) values.token = token.value.trim();
+      const values = { provider, route: route === 'custom' ? 'browser' : route, name: connectionName?.value.trim() || undefined, connectionId: connection?.id };
+      if (token) {
+        values.token = token.value.trim();
+        if (!values.token) return warning('Enter an access token.');
+      }
       if (clientId) values.clientId = clientId.value.trim();
       if (secret?.value) values.clientSecret = secret.value.trim();
       finishConnection(values);
@@ -501,23 +567,23 @@ export function createPanels(actions) {
     const allowed = item ? editable(item, source) : true;
     const appointment = !item && defaults.kind === 'appointment';
     const choices = item ? [source] : state().sources.filter(choice =>
-      choice.selected && writable(choice) && (!appointment || choice.provider === 'google'));
+      choice.selected && writable(choice) && (!appointment || choice.itemKind === 'event'));
     const newTitle = appointment ? 'New appointment' : 'New item';
-    panel('editor', item ? (allowed ? 'Edit ' + (source.provider === 'ticktick' ? 'task' : 'event') : 'Item details') : newTitle);
+    panel('editor', item ? (allowed ? 'Edit ' + source.itemKind : 'Item details') : newTitle);
     if (!choices.length) {
       body.append(element('p', '', appointment
-        ? 'Select a writable Google calendar in Manage calendars to create an appointment.'
-        : 'Choose a writable TickTick list or Google calendar in Calendars to create an item.'));
+        ? 'Select a writable event calendar in Manage calendars to create an appointment.'
+        : 'Choose a writable calendar or task list in Calendars to create an item.'));
       footer.append(button('Cancel', close), button('Manage calendars', settings, 'primary'));
       return;
     }
     if (!allowed) {
-      const location = [providers[source.provider], source.folder?.name, source.name].filter(Boolean).join(' · ');
+      const location = sourceContext(source, state().connections);
       body.append(element('strong', 'details-title', item.title), element('p', 'detail-dates', spanDescription(item)), element('p', 'help', location));
-      const reason = source.provider === 'ticktick' && item.recurring ? 'Open this recurring task in TickTick to change its schedule or completion.' :
+      const reason = source.itemKind === 'task' && item.recurring ? 'Open this recurring task in ' + brandName(source.provider) + ' to change its schedule or completion.' :
         item.completed ? 'This task is complete.' : 'This item is read-only in Calendar Hub.';
       body.append(element('p', 'inline-note', reason));
-      if (source.provider !== 'ticktick') footer.append(button('Hide in Calendar Hub', () => hide(item), 'text-button'));
+      if (source.itemKind === 'event') footer.append(button('Hide in Calendar Hub', () => hide(item), 'text-button'));
       if (completable(item, source)) footer.append(button('Complete task', () => complete(item), 'primary'));
       footer.append(button('Done', close));
       return;
@@ -549,22 +615,22 @@ export function createPanels(actions) {
       }
       destination.append(group);
     }
-    for (const provider of Object.keys(providers)) {
-      const subset = choices.filter(choice => choice.provider === provider);
+    for (const connection of state().connections) {
+      const subset = choices.filter(source => source.connectionId === connection.id);
       if (!subset.length) continue;
-      if (provider !== 'ticktick') {
-        addGroup(providers[provider], subset);
+      const name = accountLabel(connection, state().connections);
+      const provider = providerName(connection.provider);
+      const account = name === provider ? name : provider + ' · ' + name;
+      if (connection.provider !== 'ticktick') {
+        addGroup(account, subset, connection.id);
         continue;
       }
-      for (const connection of state().connections.filter(row => row.provider === 'ticktick')) {
-        const account = connection.name === 'TickTick' ? 'TickTick' : 'TickTick · ' + connection.name;
-        for (const section of tickTickSections(subset.filter(source => source.connectionId === connection.id))) {
-          addGroup(section.id ? account + ' / ' + section.name : account, section.sources, connection.id, section.id);
-        }
+      for (const section of tickTickSections(subset)) {
+        addGroup(section.id ? account + ' / ' + section.name : account, section.sources, connection.id, section.id);
       }
     }
     destination.disabled = Boolean(item);
-    const destinationLabel = item || appointment ? (source?.provider === 'ticktick' ? 'TickTick list' : 'Calendar') : 'Calendar or task list';
+    const destinationLabel = item || appointment ? (source?.itemKind === 'task' ? providerName(source.provider) + ' list' : 'Calendar') : 'Calendar or task list';
     const destinationField = field(destinationLabel, destination);
     const location = element('span', 'help destination-context');
     destinationField.append(location);
@@ -688,19 +754,19 @@ export function createPanels(actions) {
     });
     body.append(form);
     if (item && (item.recurring || item.hasAttendees)) {
-      const descriptions = [item.recurring ? 'This is one occurrence of a recurring event.' : '', item.hasAttendees ? 'Google sends updates to the guests on this event.' : ''];
+      const descriptions = [item.recurring ? 'This is one occurrence of a recurring event.' : '', item.hasAttendees ? brandName(source.provider) + ' sends updates to the guests on this event.' : ''];
       body.append(element('p', 'inline-note', descriptions.filter(Boolean).join(' ')));
     }
     if (item && completable(item, source)) {
       const done = button('Complete task', () => complete(item), 'text-button left-action');
       form.addEventListener('input', () => { done.disabled = true; done.title = 'Save your edits before completing this task'; });
       footer.append(done);
-    } else if (item && source.provider !== 'ticktick') {
+    } else if (item && source.itemKind === 'event') {
       const more = element('details', 'more-actions');
       more.append(element('summary', '', 'More actions'));
       const options = element('div');
       options.append(button('Hide in Calendar Hub', () => hide(item)));
-      if (deletable(item, source)) options.append(button('Delete from Google', () => review('remove', item, itemKey(item)), 'danger-text'));
+      if (deletable(item, source)) options.append(button('Delete from ' + brandName(source.provider), () => review('remove', item, itemKey(item)), 'danger-text'));
       more.append(options);
       footer.append(more);
     }
@@ -712,7 +778,7 @@ export function createPanels(actions) {
   }
 
   function save(item, data) {
-    if (item && sourceOf(item)?.provider === 'google' && (item.hasAttendees || item.recurring)) return review('save', item, data);
+    if (item && sourceOf(item)?.itemKind === 'event' && (item.hasAttendees || item.recurring)) return review('save', item, data);
     submitSave(item, data);
   }
   function submitSave(item, data) {
@@ -732,11 +798,12 @@ export function createPanels(actions) {
   function review(method, item, data) {
     const back = returnToPanel();
     const remove = method === 'remove';
-    panel('review', remove ? 'Delete from Google?' : 'Review Google event change', { back });
     const source = sourceOf(item);
-    body.append(element('strong', 'details-title', item.title), element('p', 'help', source.name + ' · Google'));
+    const brand = brandName(source.provider);
+    panel('review', remove ? 'Delete from ' + brand + '?' : 'Review ' + brand + ' event change', { back });
+    body.append(element('strong', 'details-title', item.title), element('p', 'help', sourceContext(source, state().connections)));
     if (remove) {
-      body.append(element('p', '', 'Delete this event from its Google calendar?'), element('p', 'detail-dates', spanDescription(item)));
+      body.append(element('p', '', 'Delete this event from its ' + brand + ' calendar?'), element('p', 'detail-dates', spanDescription(item)));
     } else {
       const times = element('dl', 'review-times');
       times.append(element('dt', '', 'Current'), element('dd', '', spanDescription(item)), element('dt', '', 'New'), element('dd', '', spanDescription(data)));
@@ -747,7 +814,7 @@ export function createPanels(actions) {
     if (item.hasAttendees) {
       const guests = check('Notify guests');
       const guestMessage = viaAppleCalendar(item) ? 'Apple Calendar and Google handle delivery to guests when they sync.' :
-        remove ? 'Google will send a cancellation to guests.' : 'Google will send the updated event to guests.';
+        brand + (remove ? ' will send a cancellation to guests.' : ' will send the updated event to guests.');
       body.append(guests.row, element('p', 'help check-help', guestMessage));
       checks.push(guests.control);
     }
@@ -756,10 +823,10 @@ export function createPanels(actions) {
       body.append(scope.row, element('p', 'help check-help', 'Apply this change to the occurrence shown above.'));
       checks.push(scope.control);
     }
-    const confirm = button(remove ? 'Delete from Google' : 'Save changes', () => {
+    const confirm = button(remove ? 'Delete from ' + brand : 'Save changes', () => {
       if (checks.some(control => !control.checked)) return;
       const payload = { ...data, notify: Boolean(item.hasAttendees), occurrence: Boolean(item.recurring) };
-      if (remove) write('remove', payload, () => { close(); actions.toast(viaAppleCalendar(item) ? 'Deleted in Apple Calendar for sync to Google' : 'Deleted from Google'); });
+      if (remove) write('remove', payload, () => { close(); actions.toast(viaAppleCalendar(item) ? 'Deleted in Apple Calendar for sync to Google' : 'Deleted from ' + brand); });
       else submitSave(item, payload);
     }, remove ? 'destructive' : 'primary');
     const evaluate = () => { confirm.disabled = checks.some(control => !control.checked); };
@@ -772,7 +839,7 @@ export function createPanels(actions) {
     write('hide', { id: item.id, sourceId: item.sourceId }, () => { close(); actions.toast('Hidden in Calendar Hub'); });
   }
   function complete(item) {
-    if (completable(item, sourceOf(item))) write('complete', itemKey(item), () => { close(); actions.toast('Task completed in TickTick'); });
+    if (completable(item, sourceOf(item))) write('complete', itemKey(item), () => { close(); actions.toast('Task completed in ' + brandName(sourceOf(item)?.provider)); });
   }
   function hiddenItems() {
     panel('hidden', 'Hidden items', { wide: true });
@@ -781,7 +848,7 @@ export function createPanels(actions) {
     for (const row of rows) {
       const entry = element('div', 'review-entry');
       const info = element('div');
-      info.append(element('strong', '', row.title), element('small', '', sourceOf(row)?.name || 'Calendar'));
+      info.append(element('strong', '', row.title), element('small', '', sourceContext(sourceOf(row), state().connections)));
       entry.append(info, button('Restore', () => write('restore', { id: row.id, sourceId: row.sourceId }, () => { hiddenItems(); actions.toast('Item restored'); })));
       body.append(entry);
     }
@@ -794,7 +861,7 @@ export function createPanels(actions) {
     for (const row of rows) {
       const entry = element('div', 'review-entry');
       const info = element('div');
-      info.append(element('strong', '', row.title), element('small', '', sourceOf(row)?.name || 'Calendar'), element('p', 'help', row.message));
+      info.append(element('strong', '', row.title), element('small', '', sourceContext(sourceOf(row), state().connections)), element('p', 'help', row.message));
       entry.append(info, button('Mark reviewed', () => {
         panel('acknowledge', 'Mark write as reviewed?', { back: uncertainItems });
         body.append(element('strong', 'details-title', row.title), element('p', '', 'Confirm that you checked the source for this item. Calendar Hub will clear this notice.'));
@@ -833,8 +900,8 @@ export function createPanels(actions) {
     };
     add(editable(item, source) ? 'Edit item' : 'View details', () => edit(item));
     if (completable(item, source)) add('Complete task', () => complete(item));
-    if (source.provider !== 'ticktick') add('Hide in Calendar Hub', () => hide(item));
-    if (deletable(item, source)) add('Delete from Google', () => review('remove', item, itemKey(item)), true);
+    if (source.itemKind === 'event') add('Hide in Calendar Hub', () => hide(item));
+    if (deletable(item, source)) add('Delete from ' + brandName(source.provider), () => review('remove', item, itemKey(item)), true);
     showMenu('Item actions', choices, x, y, trigger);
   }
   document.addEventListener('pointerdown', event => { if (!menu.contains(event.target)) closeMenu(false); });

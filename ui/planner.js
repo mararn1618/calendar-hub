@@ -25,7 +25,7 @@ export function createPlanner(viewport, actions) {
 
   function render({ days, selectedDate, entries, calendars }) {
     const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const signature = JSON.stringify([days, selectedDate, entries, calendars.map(s => [s.id, s.name, s.context, s.provider, s.color, s.writable, s.readOnly]), zone, localDate()]);
+    const signature = JSON.stringify([days, selectedDate, entries, calendars.map(s => [s.id, s.name, s.context, s.provider, s.itemKind, s.color, s.writable, s.readOnly]), zone, localDate()]);
     if (signature === snapshot) {
       clock();
       return;
@@ -148,7 +148,7 @@ export function createPlanner(viewport, actions) {
     block.title = [item.title, time, source.context || source.name].join(' · ');
     if (item.completed) block.classList.add('completed');
     const title = element('span', 'item-title');
-    if (source.provider === 'ticktick') title.append(element('span', 'task-box', item.completed ? '✓' : ''));
+    if (source.itemKind === 'task') title.append(element('span', 'task-box', item.completed ? '✓' : ''));
     title.append(document.createTextNode(item.title));
     block.append(title);
     if (segment) {

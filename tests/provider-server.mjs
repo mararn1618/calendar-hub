@@ -9,8 +9,8 @@ export function civilDay(date = new Date()) {
 const stamp = (day, hour, minute = 0) => new Date(day + 'T' + String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0') + ':00').toISOString();
 const tickStamp = value => new Date(value).toISOString().replace('Z', '+0000');
 
-export async function startProviderServer() {
-  const day = civilDay(), zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+function fixtureAccount(day, zone, id, multipleAccounts) {
+  const inbox = multipleAccounts ? (id === 'first' ? 'inbox101' : 'inbox202') : 'inbox-user';
   const midnight = tickStamp(stamp(day, 0));
   const originals = new Map();
   const projectGroups = [
@@ -27,12 +27,13 @@ export async function startProviderServer() {
     { id: 'templates', name: 'Templates', sortOrder: -100 },
     { id: 'closed', name: 'Closed tasks', groupId: 'archive', sortOrder: 20, closed: true },
   ].map(project => ({ permission: 'write', ...project }));
+  if (multipleAccounts) projects.push({ id: inbox, name: 'Inbox', permission: 'write' });
   originals.set('review', { id: 'review', projectId: 'planning', title: 'Review the launch plan', content: 'Keep these notes.',
     items: [{ id: 'checklist-one', title: 'Check the agenda', status: 0 }], tags: ['planning'], priority: 3,
     startDate: midnight, dueDate: midnight, timeZone: zone, isAllDay: true, status: 0 });
   originals.set('timed', { id: 'timed', projectId: 'planning', title: 'Prepare interview questions', status: 0,
     startDate: tickStamp(stamp(day, 14)), dueDate: tickStamp(stamp(day, 14, 45)), timeZone: zone, isAllDay: false });
-  originals.set('inbox-one', { id: 'inbox-one', projectId: 'inbox-user', title: 'Read studio brief', status: 0,
+  originals.set('inbox-one', { id: 'inbox-one', projectId: inbox, title: 'Read studio brief', status: 0,
     startDate: midnight, dueDate: midnight, timeZone: zone, isAllDay: true });
   for (const [id, projectId, title] of [
     ['brief-task', 'briefs', 'Read the design brief'],
@@ -42,7 +43,7 @@ export async function startProviderServer() {
     originals.set(id, { id, projectId, title, status: 0, startDate: midnight, dueDate: midnight, timeZone: zone, isAllDay: true });
   }
   const calendars = [
-    { id: 'studio@example.test', summary: 'Studio', accessRole: 'owner', primary: true, backgroundColor: '#366aba' },
+    { id: id === 'first' ? 'studio@example.test' : 'field@example.test', summary: 'Studio', accessRole: 'owner', primary: true, backgroundColor: '#366aba' },
     { id: 'bmw-copy', summary: 'BMW Work', accessRole: 'writer', backgroundColor: '#bb7046' },
     { id: 'tick-copy', summary: 'TickTick copies', accessRole: 'reader', backgroundColor: '#776cb2' }
   ];
@@ -57,11 +58,20 @@ export async function startProviderServer() {
     { recurringEventId: 'weeklyseries', originalStartTime: { dateTime: stamp(day, 15) } });
   addEvent('bmw-copy', 'bmwmeeting', 'BMW project sync', stamp(day, 10, 30), stamp(day, 11, 30));
   addEvent('tick-copy', 'tickcopy', 'Review the launch plan', stamp(day, 9), stamp(day, 9, 30));
+  const suffix = id === 'first' ? '' : '-' + id;
+  return { id, calendars, events, originals, projects, projectGroups, inbox, googleAccess: 'fixture-google-access' + suffix,
+    googleRefresh: 'fixture-google-refresh' + suffix, tickToken: null };
+}
+
+export async function startProviderServer({ multipleAccounts = false } = {}) {
+  const day = civilDay(), zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const accounts = [fixtureAccount(day, zone, 'first', multipleAccounts)];
+  if (multipleAccounts) accounts.push(fixtureAccount(day, zone, 'second', true));
   const controls = { unavailable: new Set(), noTickId: false, requests: [] };
   const notifications = createNotificationFixture();
   const authorizations = new Map();
   const publicClients = new Map();
-  let origin, currentTickToken;
+  let origin;
 
   const server = createServer(async (request, response) => {
     const u = new URL(request.url, origin), method = request.method;
@@ -93,12 +103,15 @@ export async function startProviderServer() {
         const id = randomUUID();
         authorizations.set(id, { ...Object.fromEntries(u.searchParams), ticktick: isTickSignIn });
         response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-        return response.end('<title>Test consent</title><form method="post" action="/oauth/consent"><input type="hidden" name="id" value="' + id + '"><button>' +
+        const picker = multipleAccounts ? '<label>Test account<select name="account"><option value="first">First account</option><option value="second">Second account</option></select></label>' : '';
+        return response.end('<title>Test consent</title><form method="post" action="/oauth/consent"><input type="hidden" name="id" value="' + id + '">' + picker + '<button>' +
           (isTickSignIn ? 'Authorize test tasks' : 'Authorize test calendars') + '</button></form>');
       }
       if (u.pathname === '/oauth/consent' && method === 'POST') {
-        const id = new URLSearchParams(contents).get('id'), auth = authorizations.get(id);
-        if (!auth) return json(400);
+        const form = new URLSearchParams(contents), id = form.get('id'), auth = authorizations.get(id);
+        const account = accounts.find(row => row.id === (form.get('account') || 'first'));
+        if (!auth || !account) return json(400);
+        auth.account = account;
         const callback = new URL(auth.redirect_uri);
         callback.searchParams.set('code', id); callback.searchParams.set('state', auth.state);
         response.writeHead(302, { location: callback.href }); return response.end();
@@ -107,26 +120,31 @@ export async function startProviderServer() {
         const form = new URLSearchParams(contents);
         if (form.get('grant_type') === 'authorization_code') {
           const auth = authorizations.get(form.get('code'));
-          if (!auth || auth.ticktick !== isTickSignIn || form.get('client_id') !== auth.client_id || form.get('redirect_uri') !== auth.redirect_uri ||
+          if (!auth?.account || auth.ticktick !== isTickSignIn || form.get('client_id') !== auth.client_id || form.get('redirect_uri') !== auth.redirect_uri ||
               createHash('sha256').update(form.get('code_verifier') || '').digest('base64url') !== auth.code_challenge) return json(400, { error: 'invalid_grant' });
           authorizations.delete(form.get('code'));
           if (isTickSignIn) {
             if (form.has('client_secret') || form.get('scope') !== 'tasks:write tasks:read') return json(400, { error: 'invalid_request' });
-            currentTickToken = 'fixture-tick-token-' + randomUUID();
-            return json(200, { access_token: currentTickToken, token_type: 'bearer', expires_in: 3600, scope: auth.scope });
+            auth.account.tickToken = 'fixture-tick-token-' + randomUUID();
+            return json(200, { access_token: auth.account.tickToken, token_type: 'bearer', expires_in: 3600, scope: auth.scope });
           }
-          return json(200, { access_token: 'fixture-google-access', refresh_token: 'fixture-google-refresh', token_type: 'Bearer', expires_in: 3600, scope: auth.scope });
+          return json(200, { access_token: auth.account.googleAccess, refresh_token: auth.account.googleRefresh, token_type: 'Bearer', expires_in: 3600, scope: auth.scope });
         }
-        return form.get('refresh_token') === 'fixture-google-refresh' ? json(200, { access_token: 'fixture-google-access', expires_in: 3600, token_type: 'Bearer' }) : json(401);
+        const account = accounts.find(row => row.googleRefresh === form.get('refresh_token'));
+        return account && !isTickSignIn ? json(200, { access_token: account.googleAccess, expires_in: 3600, token_type: 'Bearer' }) : json(401);
       }
       const isGoogle = u.pathname.startsWith('/google/calendar/v3/');
       const prefix = isGoogle ? '/google/calendar/v3' : '/tick/open/v1';
       if (!u.pathname.startsWith(prefix + '/')) return json(404);
       const parts = u.pathname.slice(prefix.length + 1).split('/').map(decodeURIComponent);
-      const expected = isGoogle ? 'fixture-google-access' : currentTickToken;
-      if (!expected || request.headers.authorization !== 'Bearer ' + expected) return json(401, { error: { message: 'Invalid test credential.' } });
+      const account = accounts.find(row => {
+        const expected = isGoogle ? row.googleAccess : row.tickToken;
+        return expected && request.headers.authorization === 'Bearer ' + expected;
+      });
+      if (!account) return json(401, { error: { message: 'Invalid test credential.' } });
+      const { calendars, projects, projectGroups, originals, events, inbox } = account;
       const body = contents ? JSON.parse(contents) : {};
-      controls.requests.push({ provider: isGoogle ? 'google' : 'ticktick', method, path: parts.join('/'), query: Object.fromEntries(u.searchParams) });
+      controls.requests.push({ provider: isGoogle ? 'google' : 'ticktick', account: account.id, method, path: parts.join('/'), query: Object.fromEntries(u.searchParams) });
       if (isGoogle) {
         if (parts.join('/') === 'users/me/calendarList') {
           return u.searchParams.has('pageToken') ? json(200, { items: calendars.slice(2) }) : json(200, { items: calendars.slice(0, 2), nextPageToken: 'more' });
@@ -169,7 +187,7 @@ export async function startProviderServer() {
           if (method === 'GET') return json(200, original);
           if (action === 'complete' && method === 'POST') { original.status = 2; return json(200); }
         }
-        if (first === 'task' && second === 'undone') return json(200, [...originals.values()].filter(item => item.projectId === 'inbox-user' && !item.status));
+        if (first === 'task' && second === 'undone') return json(200, [...originals.values()].filter(item => item.projectId === inbox && !item.status));
         if (first === 'task' && second === 'completeTasks') {
           for (const id of body.taskIds) if (originals.has(id)) originals.get(id).status = 2;
           return json(200, body.taskIds);
@@ -192,6 +210,7 @@ export async function startProviderServer() {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   origin = 'http://127.0.0.1:' + server.address().port;
-  return { origin, day, originals, events, projects, projectGroups, controls, notifications: notifications.state,
+  const { originals, events, projects, projectGroups } = accounts[0];
+  return { origin, day, accounts, originals, events, projects, projectGroups, controls, notifications: notifications.state,
     close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
 }

@@ -1,6 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-const operations = ['state', 'connect', 'macGoogleCalendars', 'openInternetAccounts', 'disconnect', 'setSource',
+const operations = ['state', 'connect', 'renameConnection', 'macAccountCalendars', 'macGoogleCalendars', 'openInternetAccounts', 'disconnect', 'setSource',
   'configureTickTick', 'setTickTickCalendarVisible', 'setCalendarNotifications', 'save', 'complete', 'remove', 'hide', 'restore', 'acknowledge'];
 const calendar = {};
 for (const operation of operations) {

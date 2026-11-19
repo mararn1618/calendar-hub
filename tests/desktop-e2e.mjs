@@ -11,6 +11,7 @@ import { verifyTickTickJourneys } from './ticktick-journeys.mjs';
 import { expandFolder, verifyTickTickCalendars } from './ticktick-calendars-e2e.mjs';
 import { verifyGoogleJourneys } from './google-journeys.mjs';
 import { verifyMacOnboarding } from './mac-onboarding-e2e.mjs';
+import { verifyBrowserAccounts } from './multi-account-journeys.mjs';
 import { verifyNotificationJourneys } from './notification-journeys.mjs';
 import { verifyDragCreateJourneys } from './drag-create-journeys.mjs';
 
@@ -47,7 +48,7 @@ async function onboard(page) {
   await tickConsent.getByRole('button', { name: 'Authorize test tasks' }).click();
   await dialog.getByRole('button', { name: 'Edit lists', exact: true }).waitFor();
   assert.equal(await dialog.getByRole('checkbox', { name: 'Planning tasks', exact: true }).count(), 0);
-  await dialog.getByRole('button', { name: 'Connect Google', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Connect Google Calendar', exact: true }).click();
   assert.equal(await dialog.getByLabel('Client ID', { exact: true }).count(), 0);
   const oauth = driver.application.waitForEvent('window');
   await dialog.getByRole('button', { name: 'Continue with Google', exact: true }).click();
@@ -73,7 +74,7 @@ async function onboard(page) {
     return id;
   }
   const planningId = await selectedPlanningId();
-  await dialog.getByRole('button', { name: 'Reconnect', exact: true }).click();
+  await dialog.locator('.connection-group').filter({ has: page.getByRole('button', { name: 'Edit lists', exact: true }) }).getByRole('button', { name: 'Reconnect', exact: true }).click();
   const reauth = driver.application.waitForEvent('window');
   await dialog.getByRole('button', { name: 'Continue with TickTick', exact: true }).click();
   await (await reauth).getByRole('button', { name: 'Authorize test tasks' }).click();
@@ -162,9 +163,12 @@ try {
   report.passed.push('Per-calendar timed notifications, permission, quick/custom leads, hidden calendars, updates, completion, mute and restart with a simulated notification center');
   assert.deepEqual(driver.errors, [], 'Unexpected renderer errors');
   await driver.close();
-  console.log('Select Google accounts in Apple Calendar');
+  console.log('Independent Google and Exchange accounts in Apple Calendar');
   await verifyMacOnboarding({ temporary, evidence });
-  report.passed.push('Google through Apple Calendar: permission, explicit calendar selection, original edits and restart in a simulated Mac calendar store');
+  report.passed.push('Two Mac Google and two read-only Exchange accounts, scoped edits, independent reminders, rename, restart and disconnect');
+  console.log('Two Google and two TickTick browser accounts');
+  await verifyBrowserAccounts({ temporary, evidence });
+  report.passed.push('Browser sign-in to two Google and two TickTick accounts, with overlapping lists and calendars, separate writes, reconnect and restart');
   report.status = 'passed';
 } catch (error) {
   report.status = 'failed'; report.error = error.message;

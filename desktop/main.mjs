@@ -1,15 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, powerMonitor, safeStorage, shell } from 'electron';
-import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CalendarService } from './calendar-service.mjs';
 import { configureAppIdentity } from './app-identity.mjs';
 import { Profile } from './profile.mjs';
-import { readGoogleDesktopClient } from './google-client.mjs';
-import { createTickTick } from './providers/ticktick.mjs';
-import { authorizeTickTick } from './providers/ticktick-auth.mjs';
-import { createGoogle, authorizeGoogle, refreshGoogleToken } from './providers/google.mjs';
+import { createDesktopRegistry } from './providers/integrations.mjs';
 import { createMacCalendar } from './providers/mac.mjs';
 import { createMacNotificationCenter } from './mac-notifications.mjs';
 
@@ -33,14 +29,6 @@ if (testArgument) {
 configureAppIdentity(app, Menu, testProfile);
 
 const macHelper = app.isPackaged ? path.join(process.resourcesPath, 'calendar-mac') : path.join(directory, '../build/native/calendar-mac');
-const bundledGoogle = path.join(directory, 'google-desktop.json');
-let googleClient, googleConfigError;
-if (testOrigin) {
-  if (browserFixture) googleClient = { clientId: 'fixture.apps.googleusercontent.com', clientSecret: 'fixture-secret' };
-} else {
-  try { googleClient = readGoogleDesktopClient() ?? (existsSync(bundledGoogle) ? readGoogleDesktopClient(bundledGoogle) : null); }
-  catch { googleConfigError = 'The configured Google desktop client file could not be loaded.'; }
-}
 const nativeAvailable = process.platform === 'darwin' && (!testOrigin || macFixture);
 
 function fixtureNotificationCenter(origin) {
@@ -59,15 +47,15 @@ function fixtureNotificationCenter(origin) {
   };
 }
 
-function macClient(googleCalendarIds) {
-  if (testOrigin && !macFixture) throw new Error('Mac calendars are unavailable in this test profile.');
-  const executeHelper = macFixture ? async (_executable, args, input) => {
-    const reply = await fetch(testOrigin + '/mac-helper', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000),
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ args, input }) });
-    if (!reply.ok) throw new Error('The test calendar could not respond.');
-    return reply.text();
-  } : undefined;
-  return createMacCalendar({ executable: macHelper, googleCalendarIds, executeHelper });
+async function fixtureMacHelper(_executable, args, input) {
+  const reply = await fetch(testOrigin + '/mac-helper', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000),
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ args, input }) });
+  if (!reply.ok) throw new Error('The test calendar could not respond.');
+  return reply.text();
+}
+
+function macCalendar(options) {
+  return createMacCalendar({ ...options, executable: macHelper, executeHelper: macFixture ? fixtureMacHelper : undefined });
 }
 
 async function inBrowser(authorize) {
@@ -82,63 +70,6 @@ async function inBrowser(authorize) {
   try { return await authorize(openExternal); }
   finally { if (signIn && !signIn.isDestroyed()) signIn.close(); }
 }
-
-const registry = {
-  connectionOptions: { googleBrowser: Boolean(googleClient), macCalendars: nativeAvailable, googleConfigError },
-  macGoogleCalendars() {
-    if (!nativeAvailable) throw new Error('Open Calendar Hub on a Mac to choose Apple Calendar accounts.');
-    return macClient().authorize({ google: true });
-  },
-  async authorize(input) {
-    if (input.provider === 'mac' && nativeAvailable) {
-      await macClient().authorize();
-      return {};
-    }
-    if (input.provider === 'ticktick') {
-      const token = String(input.token || '').trim();
-      if (token) return { token };
-      if (input.route === 'token') throw new Error('Enter your TickTick personal API token.');
-      return inBrowser(openExternal => authorizeTickTick({ openExternal, registrationFile: path.join(app.getPath('userData'), 'ticktick-oauth-client.json'),
-        ...(testOrigin && { registrationEndpoint: testOrigin + '/tick/oauth/register', authEndpoint: testOrigin + '/tick/oauth/authorize',
-          tokenEndpoint: testOrigin + '/tick/oauth/token', issuer: testOrigin }) }));
-    }
-    if (input.provider !== 'google') throw new Error('This calendar provider is unavailable.');
-    if (input.route === 'mac') {
-      if (!nativeAvailable) throw new Error('Open Calendar Hub on a Mac to use Apple Calendar.');
-      const ids = input.googleCalendarIds;
-      if (!Array.isArray(ids) || !ids.length || !ids.every(id => typeof id === 'string' && id.length)) {
-        throw new Error('Choose at least one calendar from your Google account.');
-      }
-      return { route: 'mac', googleCalendarIds: [...new Set(ids)] };
-    }
-    const client = input.clientId ? { clientId: String(input.clientId).trim(), clientSecret: String(input.clientSecret || '').trim() } : googleClient;
-    if (!client) throw new Error('Use your Google account in Apple Calendar or choose your own Google desktop client.');
-    const auth = await inBrowser(openExternal => authorizeGoogle({ ...client, openExternal,
-      ...(testOrigin && { authEndpoint: testOrigin + '/oauth/authorize', tokenEndpoint: testOrigin + '/oauth/token' }) }));
-    return { ...client, ...auth };
-  },
-  client(provider, secret) {
-    if (provider === 'ticktick') return createTickTick({ token: secret.token, expiresAt: secret.expiresAt, ...(testOrigin && { apiBase: testOrigin + '/tick/open/v1' }) });
-    if (provider === 'mac') return macClient();
-    if (provider !== 'google') throw new Error('Unknown calendar provider.');
-    if (secret.route === 'mac') return macClient(secret.googleCalendarIds);
-    let current = { accessToken: secret.accessToken, expiresAt: secret.expiresAt }, pending;
-    const getAccessToken = async () => {
-      if (current.accessToken && current.expiresAt > Date.now() + 60_000) return current.accessToken;
-      pending ??= refreshGoogleToken({ ...secret, ...(testOrigin && { tokenEndpoint: testOrigin + '/oauth/token' }) })
-        .then(result => current = result).finally(() => { pending = null; });
-      return (await pending).accessToken;
-    };
-    return createGoogle({ getAccessToken, ...(testOrigin && { apiBase: testOrigin + '/google/calendar/v3' }) });
-  },
-  identity(provider, secret, sources) {
-    if (provider === 'mac') return 'this-mac';
-    if (provider === 'google' && secret.route === 'mac') return 'google-via-apple-calendar';
-    const primary = sources.find(source => source.primary)?.id;
-    if (provider === 'google' && primary) return primary;
-    return createHash('sha256').update(secret.token ?? secret.refreshToken).digest('hex');
-  }
-};
 
 let mainWindow;
 function openWindow() {
@@ -160,9 +91,14 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } });
   app.whenReady().then(async () => {
     if (!app.isPackaged) app.dock?.setIcon(path.join(directory, '../assets/calendar-hub.png'));
+    const profileDirectory = app.getPath('userData');
+    const registry = createDesktopRegistry({
+      inBrowser, profileDirectory, macCalendar: nativeAvailable ? macCalendar : undefined,
+      testOrigin, fixtureGoogleBrowser: browserFixture,
+    });
     registry.notificationCenter = testOrigin ? fixtureNotificationCenter(testOrigin) : createMacNotificationCenter();
-    const service = new CalendarService(new Profile(app.getPath('userData'), safeStorage), registry);
-    for (const action of ['state', 'connect', 'macGoogleCalendars', 'openInternetAccounts', 'disconnect', 'setSource',
+    const service = new CalendarService(new Profile(profileDirectory, safeStorage), registry);
+    for (const action of ['state', 'connect', 'renameConnection', 'macAccountCalendars', 'macGoogleCalendars', 'openInternetAccounts', 'disconnect', 'setSource',
       'configureTickTick', 'setTickTickCalendarVisible', 'setCalendarNotifications', 'save', 'complete', 'remove', 'hide', 'restore', 'acknowledge']) {
       ipcMain.handle('calendar:' + action, async (event, input) => {
         if (event.sender !== mainWindow?.webContents || event.senderFrame !== mainWindow.webContents.mainFrame

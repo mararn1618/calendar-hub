@@ -2,6 +2,14 @@
 
 ## Language
 
+**Integration**
+
+A provider implementation for Google Calendar, TickTick, Exchange or Mac calendars. Each integration defines its sign-in routes, how it identifies an account and how it reads or changes that account's items.
+
+**Connection**
+
+One saved account in Calendar Hub. Each connection has its own local name, credentials or Mac account reference, calendars and settings. A provider can have several connections.
+
 **TickTick task**
 
 A to-do kept in TickTick. It can have a day, a time slot and a completion state. Checking it off in Calendar Hub means completing the original task in TickTick.

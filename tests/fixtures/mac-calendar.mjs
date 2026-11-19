@@ -20,12 +20,23 @@ export async function startMacCalendarFixture(calendars) {
       if (request.url.startsWith('/notification-center/')) return reply(notifications.call(request.url, contents));
       if (request.url !== '/mac-helper') return reply({}, 404);
       const { args, input } = JSON.parse(contents);
-      const [action, route, calendarId, start, end] = args;
-      calls.push({ action, route, calendarId, input });
-      if (!['mac', 'google'].includes(route)) return reply({ error: 'Invalid route.', code: 'INVALID' });
-      const discovered = calendars.filter(calendar => route === 'mac' || calendar.calDAV);
-      if (action === 'authorize' || action === 'sources') {
-        return reply(discovered.map(({ id, name, accountName, writable }) => ({ id, name, accountName, writable: route === 'google' && writable })));
+      const [action, route] = args;
+      const lengths = { authorize: 2, accounts: 2, sources: 2, items: 5, create: 3, update: 3, remove: 3 };
+      const length = lengths[action], [, , calendarId, start, end] = args.slice(0, length);
+      const scope = args.length === length + 1 ? JSON.parse(args[length]) : {};
+      calls.push({ action, route, calendarId, input, accountId: scope.accountId });
+      if (!['mac', 'google', 'exchange'].includes(route) || !length) return reply({ error: 'Invalid route.', code: 'INVALID' });
+      const writing = ['create', 'update', 'remove'].includes(action);
+      if (writing && route !== 'google') return reply({ error: 'Calendar is read-only.', code: 'READ_ONLY' });
+      const accountInventory = action === 'authorize' || action === 'accounts';
+      if (route === 'exchange' && !accountInventory && !scope.accountId) return reply({ error: 'Choose an Exchange account.', code: 'INVALID' });
+      if (route === 'google' && !accountInventory && !Array.isArray(scope.googleCalendarIds)) return reply({ error: 'Choose Google calendars.', code: 'INVALID' });
+      const discovered = calendars.filter(calendar => route === 'mac' || (route === 'google' ? calendar.calDAV : calendar.exchange))
+        .map(calendar => ({ ...calendar, accountId: calendar.accountId ?? 'fixture:' + (calendar.accountName ?? calendar.id) }))
+        .filter(calendar => (!scope.accountId || scope.accountId === calendar.accountId) &&
+          (!scope.googleCalendarIds || scope.googleCalendarIds.includes(calendar.id)));
+      if (accountInventory || action === 'sources') {
+        return reply(discovered.map(({ id, name, accountId, accountName, writable }) => ({ id, name, accountId, accountName, writable: route === 'google' && writable })));
       }
       const calendar = discovered.find(row => row.id === calendarId);
       if (!calendar) return reply({ error: 'Calendar unavailable.', code: 'UNAVAILABLE' });
@@ -35,13 +46,16 @@ export async function startMacCalendarFixture(calendars) {
         return reply(rows.filter(row => row.allDay ? row.start < end && row.end > start : Date.parse(row.start) < +until && Date.parse(row.end) > +from)
           .map(row => ({ ...row, canEdit: route === 'google' && calendar.writable, canDelete: route === 'google' && calendar.writable })));
       }
-      if (route !== 'google' || !calendar.writable) return reply({ error: 'Calendar is read-only.', code: 'READ_ONLY' });
-      if (!['create', 'update'].includes(action) || !input?.draft) return reply({ error: 'Invalid write.', code: 'INVALID' });
-
+      if (!calendar.writable) return reply({ error: 'Calendar is read-only.', code: 'READ_ONLY' });
       const previous = events.get(input.original?.id);
-      if (action === 'update' && (!previous || previous.providerCalendarId !== calendarId || previous.version !== input.original.version || previous.start !== input.original.start)) {
+      if (action !== 'create' && (!previous || previous.providerCalendarId !== calendarId || previous.version !== input.original.version || previous.start !== input.original.start)) {
         return reply({ error: 'Event changed.', code: 'CONFLICT' });
       }
+      if (action === 'remove') {
+        events.delete(previous.id);
+        return reply({ removed: true });
+      }
+      if (!input?.draft) return reply({ error: 'Invalid write.', code: 'INVALID' });
       const event = {
         ...input.draft, id: previous?.id ?? randomUUID(), version: randomUUID(), providerCalendarId: calendarId,
         canEdit: true, canDelete: true, recurring: false, hasAttendees: false, completed: false, canComplete: false,

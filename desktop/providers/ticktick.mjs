@@ -149,6 +149,12 @@ function isInbox(source) {
   return source.id === 'inbox' || source.inbox === true
 }
 
+function confirmedInboxId(known, projectId) {
+  if (!projectId || projectId === 'inbox') return known
+  if (known && projectId !== known) throw new Error('TickTick returned different Inbox identifiers.')
+  return id(projectId)
+}
+
 function normalize(source, task, zone) {
   id(task.id)
   if (typeof task.title !== 'string') throw new Error('TickTick returned a task without a title.')
@@ -321,7 +327,7 @@ export function createTickTick({
         if (folder) list.folder = folder
       }
     }
-    if (inboxList && inboxList.id !== 'inbox') inboxProjectId = inboxList.id
+    inboxProjectId = confirmedInboxId(inboxProjectId, inboxList?.id)
     return [inboxList ?? {
       id: 'inbox', name: 'Inbox', writable: true, groupId: null, sortOrder: null, archived: false, inbox: true,
     }, ...lists]
@@ -329,6 +335,7 @@ export function createTickTick({
 
   async function inboxTasks(start, end, taskIds) {
     const tasks = []
+    let foundInboxId = inboxProjectId
     for (let cursor = start; cursor < end;) {
       const lastDay = shiftDay(localIso(cursor, timeZone).slice(0, 10), 14)
       const next = Math.min(end, cursor + 14 * DAY, instant(lastDay, timeZone))
@@ -338,15 +345,28 @@ export function createTickTick({
       if (!Array.isArray(page)) throw new Error('TickTick returned an invalid Inbox response.')
       for (const task of page) {
         if (!object(task)) throw new Error('TickTick returned an invalid Inbox task.')
-        if (task.projectId && task.projectId !== 'inbox') {
-          if (inboxProjectId && task.projectId !== inboxProjectId) throw new Error('TickTick returned different Inbox identifiers.')
-          inboxProjectId = id(task.projectId)
-        }
+        foundInboxId = confirmedInboxId(foundInboxId, task.projectId)
         tasks.push(task)
       }
       cursor = next
     }
+    inboxProjectId = confirmedInboxId(inboxProjectId, foundInboxId)
     return tasks
+  }
+
+  async function accountInboxId(day, expectedId) {
+    if (!inboxProjectId && expectedId && expectedId !== 'inbox') {
+      const projectPath = '/project/' + encodeURIComponent(id(expectedId))
+      let project
+      try {
+        project = await request(projectPath)
+      } catch (error) {
+        if (error.code === 'AUTH_REQUIRED') throw error
+      }
+      if (object(project) && project.id === expectedId) inboxProjectId = confirmedInboxId(inboxProjectId, project.id)
+    }
+    if (!inboxProjectId) await inboxTasks(instant(day, timeZone), instant(shiftDay(day, 1), timeZone))
+    return inboxProjectId
   }
 
   async function items(source, start, end) {
@@ -479,5 +499,5 @@ export function createTickTick({
     throw failure('TickTick accepted completion, but the completed status could not be confirmed. Check the original task.', 'UNCERTAIN')
   }
 
-  return { sources, items, create, update, complete }
+  return { sources, items, create, update, complete, accountInboxId }
 }

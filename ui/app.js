@@ -1,5 +1,5 @@
 import { addDays, dateRangeLabel, formatDate, localDate, localTime, monday, monthStart, weekNumber } from './dates.js';
-import { $, button, element, errorText, healthFor, icon, iconButton, providers, sourceCheckbox, tickTickCalendarCheckbox } from './dom.js';
+import { $, accountLabel, button, element, errorText, healthFor, icon, iconButton, labelNativeSources, sourceContext, sourceCheckbox, tickTickCalendarCheckbox } from './dom.js';
 import { createPanels } from './panels.js';
 import { createPlanner } from './planner.js';
 
@@ -91,8 +91,10 @@ function renderSources() {
   }
   for (const connection of data.connections) {
     const group = element('div', 'sidebar-group');
-    const heading = element('h3', '', connection.name || providers[connection.provider]);
+    const heading = element('h3', '', accountLabel(connection, data.connections));
     heading.title = heading.textContent;
+    group.setAttribute('role', 'group');
+    group.setAttribute('aria-label', heading.textContent);
     if (connection.provider === 'ticktick') {
       const calendars = data.ticktickCalendars.filter(calendar => calendar.connectionId === connection.id);
       const configure = iconButton('Edit TickTick lists', 'settings', () => panels.tickTickLists(connection.id));
@@ -103,7 +105,7 @@ function renderSources() {
         try { await mutate('setTickTickCalendarVisible', { connectionId: connection.id, calendarId: calendar.id, visible }); }
         catch (error) { report(errorText(error)); renderSources(); }
       }, data.health)));
-      if (connection.ticktick.mode === 'account' && rows.length === 1) rows[0].append(configure);
+      if (connection.ticktick.mode === 'account' && rows.length === 1 && calendars[0].name === heading.textContent) rows[0].append(configure);
       else {
         const header = element('div', 'sidebar-calendar-heading');
         header.append(heading, configure);
@@ -156,7 +158,9 @@ function renderStatus() {
   if (data.notificationError) banners.push(banner(data.notificationError, retry));
   if (failures.length) {
     const descriptions = failures.map(entry => {
-      const name = data.sources.find(source => source.id === entry.sourceId)?.name || data.connections.find(connection => connection.id === entry.connectionId)?.name || 'Calendar';
+      const source = data.sources.find(source => source.id === entry.sourceId);
+      const connection = data.connections.find(row => row.id === entry.connectionId);
+      const name = source ? sourceContext(source, data.connections) : connection ? accountLabel(connection, data.connections) : 'Calendar';
       const stale = entry.state === 'stale' ? ` is stale. Last checked ${localTime(entry.checkedAt)}.` : ' is unavailable.';
       return name + stale + (entry.message ? ' ' + entry.message : '');
     });
@@ -175,9 +179,7 @@ function renderCalendar() {
   const calendars = new Map(data.ticktickCalendars.map(calendar => [calendar.id, calendar]));
   const chosen = data.sources.filter(source => source.selected).map(source => {
     const calendar = calendars.get(source.calendarId);
-    if (!calendar) return source;
-    const context = [...new Set([calendar.name, source.folder?.name, source.name].filter(Boolean))].join(' · ');
-    return { ...source, color: calendar.color, context };
+    return { ...source, color: calendar?.color || source.color, context: sourceContext(source, data.connections, calendar?.name) };
   });
   const selected = new Set(chosen.map(source => source.id));
   const hidden = new Set(data.hidden.map(item => JSON.stringify([item.sourceId, item.id])));
@@ -191,7 +193,7 @@ function renderCalendar() {
     mark.setAttribute('aria-hidden', 'true');
     mark.append(element('i'), element('i'), element('i'), element('i'));
     const title = element('h2', '', connected ? 'Choose your calendars' : 'Connect your first calendar');
-    const help = element('p', '', connected ? 'Select the calendars and task lists you want to see here.' : 'Plan with your TickTick tasks, Google events and Mac calendars in one place.');
+    const help = element('p', '', connected ? 'Select the calendars and task lists you want to see here.' : 'Add an account to see its calendars and task lists here.');
     empty.replaceChildren(mark, title, help, button(connected ? 'Choose calendars' : 'Connect calendars', panels.settings, 'primary'));
   }
   const n = chosen.filter(source => source.provider !== 'ticktick').length + data.ticktickCalendars.filter(calendar => calendar.visible).length;
@@ -226,7 +228,10 @@ function refresh({ force = false, preferencesOnly = false, refreshNotifications 
       if (!window.calendar?.state) throw new Error('Open the Calendar Hub Mac app to load your calendars.');
       const result = await window.calendar.state({ start, end, ...(reuseChecks && { preferencesOnly: true }), ...(refreshNotifications && { refreshNotifications: true }) });
       if (serial !== sequence || key !== rangeKey(range())) return;
-      data = { ...emptyState, ...result };
+      const connections = result.connections.map(connection => ({
+        ...connection, providerName: result.connectionOptions.integrations.find(row => row.id === connection.provider)?.name || connection.provider
+      }));
+      data = { ...emptyState, ...result, sources: labelNativeSources(result.sources), connections };
       loadedRange = key;
       loadError = '';
       rangeCache.delete(key);
@@ -252,7 +257,7 @@ async function mutate(method, payload) {
     await window.calendar[method](payload);
   } catch (error) { failure = error; }
   const notifications = method === 'setCalendarNotifications';
-  const preferencesOnly = notifications || (!failure && (method === 'configureTickTick' || method === 'setTickTickCalendarVisible'));
+  const preferencesOnly = notifications || (!failure && (method === 'configureTickTick' || method === 'setTickTickCalendarVisible' || method === 'renameConnection'));
   while (preferencesOnly && pending && !pending.reuseChecks && pending.serial === sequence) await pending.promise;
   if (!notifications) rangeCache.clear();
   await refresh({ force: true, preferencesOnly });

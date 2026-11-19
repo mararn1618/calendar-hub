@@ -4,7 +4,23 @@ import Foundation
 
 typealias CalendarRow = [String: Any]
 
-enum Route: String { case mac, google }
+enum Route: String { case mac, google, exchange }
+
+struct CalendarScope: Decodable {
+    let accountId: String?
+    let googleCalendarIds: Set<String>?
+
+    func includes(_ route: Route, sourceType: EKSourceType?, calendarType: EKCalendarType,
+                  account: String?, calendar: String) -> Bool {
+        if let accountId, accountId != account { return false }
+        switch route {
+        case .mac: return true
+        case .google:
+            return sourceType == .calDAV && calendarType == .calDAV && (googleCalendarIds?.contains(calendar) ?? true)
+        case .exchange: return sourceType == .exchange
+        }
+    }
+}
 
 struct CalendarFailure: Error {
     let code: String
@@ -98,24 +114,27 @@ struct NativeCalendars {
     let store: EKEventStore
     let dates = CalendarDates()
     let route: Route
+    let scope: CalendarScope
 
-    func candidate(_ calendar: EKCalendar) -> Bool {
-        calendar.source?.sourceType == .calDAV && calendar.type == .calDAV
+    func includes(_ calendar: EKCalendar) -> Bool {
+        scope.includes(route, sourceType: calendar.source?.sourceType, calendarType: calendar.type,
+                       account: calendar.source?.sourceIdentifier, calendar: calendar.calendarIdentifier)
     }
 
     func writable(_ calendar: EKCalendar) -> Bool {
-        route == .google && candidate(calendar) && calendar.allowsContentModifications && !calendar.isSubscribed
+        route == .google && includes(calendar) && calendar.allowsContentModifications && !calendar.isSubscribed
     }
 
     func sources() -> [CalendarRow] {
-        store.calendars(for: .event).filter { route == .mac || candidate($0) }.map { calendar in
-            ["id": calendar.calendarIdentifier, "name": calendar.title, "accountName": calendar.source?.title ?? "", "writable": writable(calendar)]
+        store.calendars(for: .event).filter(includes).map { calendar in
+            ["id": calendar.calendarIdentifier, "name": calendar.title, "accountId": calendar.source?.sourceIdentifier ?? "",
+             "accountName": calendar.source?.title ?? "", "writable": writable(calendar)]
         }
     }
 
     func calendar(_ id: String) throws -> EKCalendar {
         guard let calendar = store.calendar(withIdentifier: id), calendar.allowedEntityTypes.contains(.event),
-              route == .mac || candidate(calendar) else {
+              includes(calendar) else {
             throw CalendarFailure("UNAVAILABLE", "This calendar is no longer available. Choose it again in Calendar Hub.")
         }
         return calendar
@@ -141,7 +160,7 @@ struct NativeCalendars {
     }
 
     func identity(_ event: EKEvent) -> String {
-        if route == .mac {
+        if route != .google {
             let recurring = event.hasRecurrenceRules || event.isDetached
             let occurrence = recurring ? (event.occurrenceDate.map { "|" + dates.seconds.string(from: $0) } ?? "") : ""
             return (event.eventIdentifier ?? event.calendarItemIdentifier) + occurrence
@@ -166,7 +185,7 @@ struct NativeCalendars {
     }
 
     func row(_ event: EKEvent) throws -> CalendarRow {
-        guard let start = event.startDate, let end = event.endDate, let calendar = event.calendar,
+        guard let start = event.startDate, let end = event.endDate, let calendar = event.calendar, includes(calendar),
               event.status != .canceled else { throw CalendarFailure.conflict }
         let id = identity(event), rights = rights(event)
         let version = route == .google ? try revision(event, id: id) : dates.seconds.string(from: event.lastModifiedDate ?? start)
@@ -182,7 +201,9 @@ struct NativeCalendars {
 
     func events(_ calendar: EKCalendar, from: Date, until: Date) -> [EKEvent] {
         let predicate = store.predicateForEvents(withStart: from, end: until, calendars: [calendar])
-        return store.events(matching: predicate).filter { $0.status != .canceled && $0.startDate != nil && $0.endDate != nil }
+        return store.events(matching: predicate).filter {
+            $0.calendar?.calendarIdentifier == calendar.calendarIdentifier && $0.status != .canceled && $0.startDate != nil && $0.endDate != nil
+        }
     }
 
     func existing(_ original: Original, on calendar: EKCalendar) throws -> EKEvent {
@@ -243,22 +264,44 @@ struct MacCalendars {
         FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: result))
     }
 
+    static func needsAccessRequest(for action: String, status: EKAuthorizationStatus) throws -> Bool {
+        if status == .fullAccess { return false }
+        guard action == "authorize", status != .denied, status != .restricted else { throw CalendarFailure.permission }
+        return true
+    }
+
     static func run(_ args: [String]) async throws -> Any {
         guard let action = args.first else { throw CalendarFailure.invalid }
         let oldRead = args == ["sources"] || (action == "items" && args.count == 4)
         let parts = oldRead ? Array(args.prefix(1)) + ["mac"] + Array(args.dropFirst()) : args
-        let lengths = ["authorize": 2, "sources": 2, "items": 5, "create": 3, "update": 3, "remove": 3]
-        guard parts.count == lengths[action], let route = Route(rawValue: parts[1]) else { throw CalendarFailure.invalid }
+        let lengths = ["authorize": 2, "accounts": 2, "sources": 2, "items": 5, "create": 3, "update": 3, "remove": 3]
+        guard let length = lengths[action], parts.count == length || parts.count == length + 1,
+              let route = Route(rawValue: parts[1]) else { throw CalendarFailure.invalid }
         let writing = ["create", "update", "remove"].contains(action)
         if writing && route != .google { throw CalendarFailure.readOnly }
-        let status = EKEventStore.authorizationStatus(for: .event)
-        if status != .fullAccess && action != "authorize" { throw CalendarFailure.permission }
-        let store = EKEventStore()
-        if status != .fullAccess {
-            guard status != .restricted, status != .denied, try await store.requestFullAccessToEvents() else { throw CalendarFailure.permission }
+        let scope: CalendarScope
+        if parts.count > length {
+            guard let requested = try? JSONDecoder().decode(CalendarScope.self, from: Data(parts[length].utf8)),
+                  requested.accountId?.isEmpty != true else { throw CalendarFailure.invalid }
+            scope = requested
+        } else {
+            scope = CalendarScope(accountId: nil, googleCalendarIds: nil)
         }
-        let native = NativeCalendars(store: store, route: route)
-        if action == "authorize" || action == "sources" { return native.sources() }
+        let accountInventory = action == "authorize" || action == "accounts"
+        if route == .exchange && !accountInventory && scope.accountId == nil { throw CalendarFailure.invalid }
+        if route == .google && !accountInventory {
+            guard let selected = scope.googleCalendarIds else { throw CalendarFailure.invalid }
+            if action != "sources" && !selected.contains(parts[2]) {
+                throw CalendarFailure("UNSELECTED", "Choose this calendar in the Google setup on this Mac.")
+            }
+        }
+        let requestAccess = try needsAccessRequest(for: action, status: EKEventStore.authorizationStatus(for: .event))
+        let store = EKEventStore()
+        if requestAccess {
+            guard try await store.requestFullAccessToEvents() else { throw CalendarFailure.permission }
+        }
+        let native = NativeCalendars(store: store, route: route, scope: scope)
+        if accountInventory || action == "sources" { return native.sources() }
         let calendar = try native.calendar(parts[2])
         if action == "items" {
             let from = try native.dates.date(parts[3], allDay: true), until = try native.dates.date(parts[4], allDay: true)

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { CalendarNotifications } from './calendar-notifications.mjs';
+import { availableAccountName, legacyMacGoogle, splitMacGoogleConnection } from './account-connections.mjs';
 import { applyTickTickCalendars, configureTickTickSettings, isTickTickInbox, listMetadata, orderedTickTickSources,
   publicTickTickSettings, retainTickTickFolders, tickTickSettings } from './ticktick-calendars.mjs';
 
@@ -9,6 +10,7 @@ const key = (connectionId, remoteId) => JSON.stringify([connectionId, remoteId])
 const matches = (entry, sourceId, id) => entry.sourceId === sourceId && entry.id === id;
 const currentTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 const tickTickInboxId = sources => sources.find(source => isTickTickInbox(source) && source.id !== 'inbox')?.id;
+const originalInboxItem = items => items?.find(item => item._ticktick?.projectId && item._ticktick.projectId !== 'inbox');
 const preferenceCacheAge = 5 * 60_000;
 
 function currentHealth(source, connection, checkedAt) {
@@ -35,7 +37,7 @@ function overlaps(item, start, end) {
   return first < until && (last > from || (first === last && first >= from));
 }
 
-function checkedDraft(input, provider) {
+function checkedDraft(input, itemKind) {
   const { start, end } = input;
   const title = typeof input.title === 'string' ? input.title.trim() : '';
   if (!title) throw new Error('Enter a title.');
@@ -43,7 +45,7 @@ function checkedDraft(input, provider) {
     if (!isDay(start) || !isDay(end) || end <= start) throw new Error('Check the all-day dates.');
   } else {
     const first = Date.parse(start), last = Date.parse(end);
-    if (!Number.isFinite(first) || !Number.isFinite(last) || last < first || (last === first && provider !== 'ticktick')) {
+    if (!Number.isFinite(first) || !Number.isFinite(last) || last < first || (last === first && itemKind !== 'task')) {
       throw new Error('Check the start and end times.');
     }
   }
@@ -84,7 +86,8 @@ export class CalendarService {
 
   run(operation, input = {}) {
     if (operation === 'connect') return this.connect(input);
-    if (operation === 'macGoogleCalendars') return this.macGoogleCalendars();
+    if (operation === 'macAccountCalendars') return this.macAccountCalendars(input);
+    if (operation === 'macGoogleCalendars') return this.macAccountCalendars({ provider: 'google' }, true);
     if (operation === 'state') {
       const { start, end } = input;
       const zone = currentTimeZone();
@@ -111,11 +114,40 @@ export class CalendarService {
     return result;
   }
 
-  async macGoogleCalendars() {
-    const candidates = await this.providers.macGoogleCalendars();
-    const connection = this.data.connections.find(entry => entry.provider === 'google' && entry.route === 'mac');
-    const chosen = new Set(connection ? this.profile.open(connection).googleCalendarIds : []);
-    return candidates.map(candidate => ({ ...candidate, chosen: chosen.has(candidate.id) }));
+  async macAccountCalendars({ provider, connectionId }, allChosen = false) {
+    const candidates = await this.providers.macAccountCalendars(provider);
+    const accounts = this.data.connections.filter(entry => entry.provider === provider && entry.route === 'mac');
+    const target = connectionId === undefined ? undefined : this.connection(connectionId, provider);
+    if (target && target.route !== 'mac') throw new Error('Choose an account from Apple Calendar.');
+    const selected = new Set(target && provider === 'google' ? this.profile.open(target).googleCalendarIds : []);
+    if (allChosen) for (const account of accounts) for (const id of this.profile.open(account).googleCalendarIds) selected.add(id);
+    const connected = new Set(accounts.map(account => account.accountId));
+    for (const account of accounts.filter(legacyMacGoogle)) {
+      const ids = new Set(this.profile.open(account).googleCalendarIds);
+      for (const row of candidates) if (ids.has(row.id)) connected.add(row.accountId);
+    }
+    const rows = candidates.map(row => ({ ...row, connected: connected.has(row.accountId),
+      chosen: provider === 'google' ? selected.has(row.id) && (!target?.accountId || target.accountId === row.accountId) :
+        Boolean(target && row.accountId === target.accountId) }));
+    const visible = new Set(candidates.filter(row => !target?.accountId || row.accountId === target.accountId).map(row => row.id));
+    for (const id of selected) {
+      if (!target || visible.has(id)) continue;
+      const sourceId = key(target.id, id);
+      const prior = this.data.sources.find(source => source.id === sourceId)?.remote ?? this.data.unavailableSourceSettings[sourceId];
+      rows.push({ id, name: prior?.name || 'Unavailable calendar', accountId: target.accountId ?? prior?.accountId,
+        accountName: prior?.accountName, writable: false, chosen: true, connected: true, unavailable: true });
+    }
+    return rows;
+  }
+
+  connection(id, provider) {
+    const connection = this.data.connections.find(row => row.id === id && (!provider || row.provider === provider));
+    if (!connection) throw new Error('This connection is unavailable. Open Calendars and choose a saved account.');
+    return connection;
+  }
+
+  integration(provider) {
+    return this.providers.connectionOptions?.integrations?.find(entry => entry.id === provider);
   }
 
   client(connection) {
@@ -135,10 +167,11 @@ export class CalendarService {
     this.tickTickCalendars.set(connection.id, applyTickTickCalendars(connection, this.connectionSources(connection.id)));
   }
 
-  updateSources(connection, discovered) {
+  updateSources(connection, discovered, selectNew = false) {
     const present = new Set();
     const unavailable = this.data.unavailableSourceSettings;
     const tickTick = connection.provider === 'ticktick';
+    const readOnly = this.integration(connection.provider)?.readOnly === true;
     const previousSources = this.connectionSources(connection.id);
     const previousById = new Map(previousSources.map(source => [source.id, source]));
     const previousInbox = tickTick && previousSources.find(source => isTickTickInbox(source.remote));
@@ -155,15 +188,16 @@ export class CalendarService {
       const settings = source ?? unavailable[id];
       const details = {
         id, remoteId: remote.id, connectionId: connection.id, provider: connection.provider,
-        name: remote.name, color: remote.color, writable: Boolean(remote.writable), remote
+        name: remote.name, color: remote.color, writable: !readOnly && Boolean(remote.writable), remote
       };
       if (tickTick) {
         details.localReadOnly = settings?.localReadOnly ?? (settings?.readOnly === true && settings.writable !== false);
         details.readOnly = details.localReadOnly || !details.writable;
       }
+      if (readOnly) details.readOnly = true;
       if (source) Object.assign(source, details);
       else {
-        source = { ...details, selected: settings?.selected ?? false, readOnly: details.readOnly ?? settings?.readOnly ?? !remote.writable };
+        source = { ...details, selected: settings?.selected ?? selectNew, readOnly: details.readOnly ?? settings?.readOnly ?? !remote.writable };
         this.data.sources.push(source);
         delete unavailable[id];
       }
@@ -172,6 +206,8 @@ export class CalendarService {
     this.data.sources = this.data.sources.filter(source => {
       if (source.connectionId !== connection.id || present.has(source.id)) return true;
       unavailable[source.id] = { selected: source.selected, readOnly: source.readOnly,
+        ...(connection.provider === 'google' && connection.route === 'mac' &&
+          { name: source.name, accountId: source.remote.accountId, accountName: source.remote.accountName }),
         ...(tickTick && { localReadOnly: source.localReadOnly ?? (source.readOnly && source.writable) }),
         ...(tickTick && source.remote.folder && { folder: source.remote.folder }) };
       return false;
@@ -186,23 +222,41 @@ export class CalendarService {
 
   async connect(input) {
     const { provider, connectionId } = input;
-    const previousSecret = connectionId === undefined ? undefined : this.tickTickConnection(provider, connectionId).secret;
+    const target = connectionId === undefined ? undefined : this.connection(connectionId, provider);
+    const previousSecret = target?.secret;
+    const savedGoogleCalendarIds = target?.provider === 'google' && target.route === 'mac' ? this.profile.open(target).googleCalendarIds : [];
     if (provider === 'google' && input.route !== 'mac' && !input.clientId && !this.providers.connectionOptions?.googleBrowser) {
-      const account = this.data.connections.find(entry => entry.provider === 'google' && entry.route !== 'mac');
+      const account = target ?? this.data.connections.find(entry => entry.provider === 'google' && entry.route !== 'mac');
       if (account) {
         const { clientId, clientSecret } = this.profile.open(account);
         if (clientId) input = { ...input, clientId, clientSecret };
       }
     }
-    const secret = await this.providers.authorize(input);
+    const secret = await this.providers.authorize(input, { legacyMac: Boolean(target && legacyMacGoogle(target)), savedGoogleCalendarIds });
     const timeZone = currentTimeZone();
     const client = this.providers.client(provider, secret);
     const discovered = await client.sources();
-    if (secret.route === 'mac' && !secret.googleCalendarIds.every(id => discovered.some(source => source.id === id))) {
+    if (secret.route === 'mac' && secret.googleCalendarIds?.some(id => !savedGoogleCalendarIds.includes(id) && !discovered.some(source => source.id === id))) {
       throw new Error('A chosen calendar is no longer available. Check your Google calendars in Apple Calendar and choose again.');
     }
     const accountKey = this.providers.identity(provider, secret, discovered);
-    return this.enqueue(() => this.storeConnection({ input, secret, client, discovered, accountKey, timeZone, previousSecret }));
+    let inboxId;
+    if (provider === 'ticktick') {
+      inboxId = tickTickInboxId(discovered);
+      if (!inboxId && client.accountInboxId) {
+        const prior = target && this.previousTickTickInbox(target);
+        const today = new Intl.DateTimeFormat('sv-SE', { timeZone }).format(new Date());
+        for (const day of new Set([prior?.day ?? today, today])) {
+          try { inboxId = await client.accountInboxId(day, prior?.id); }
+          catch (error) {
+            if (error.code === 'AUTH_REQUIRED') throw error;
+            break;
+          }
+          if (inboxId) break;
+        }
+      }
+    }
+    return this.enqueue(() => this.storeConnection({ input, secret, client, discovered, accountKey, timeZone, previousSecret, inboxId }));
   }
 
   tickTickConnection(provider, id) {
@@ -211,51 +265,74 @@ export class CalendarService {
     return connection;
   }
 
-  matchesTickTickAccount(connection, discovered) {
-    const known = this.data.sources.filter(source => source.provider === 'ticktick');
-    const previous = known.filter(source => source.connectionId === connection.id);
-    const previousInbox = tickTickInboxId(previous.map(source => source.remote));
-    const discoveredInbox = tickTickInboxId(discovered);
-    if (previousInbox && discoveredInbox) return previousInbox === discoveredInbox;
-
-    const projects = new Set(discovered.filter(source => !isTickTickInbox(source)).map(source => source.id));
-    const otherProjects = new Set(known.filter(source => source.connectionId !== connection.id && !isTickTickInbox(source.remote))
-      .map(source => source.remoteId));
-    return previous.some(source => !isTickTickInbox(source.remote) && projects.has(source.remoteId) && !otherProjects.has(source.remoteId));
+  previousTickTickInbox(connection) {
+    const source = this.connectionSources(connection.id).find(source => isTickTickInbox(source.remote));
+    const item = originalInboxItem(this.data.cache[source?.id]?.items);
+    const day = item?.allDay ? item.start : item && new Intl.DateTimeFormat('sv-SE').format(new Date(item.start));
+    return { id: connection.tickTickInboxId || (source?.remoteId !== 'inbox' && source?.remoteId) || item?._ticktick.projectId, day };
   }
 
-  storeConnection({ input, secret, client, discovered, accountKey, timeZone, previousSecret }) {
+  storeConnection({ input, secret, client, discovered, accountKey, timeZone, previousSecret, inboxId }) {
     const { provider, connectionId } = input;
-    const existing = this.data.connections.find(entry => entry.provider === provider && entry.accountKey === accountKey);
-    const target = connectionId === undefined ? undefined : this.tickTickConnection(provider, connectionId);
+    const accounts = this.data.connections.filter(entry => entry.provider === provider);
+    let existing = accounts.find(entry => entry.accountKey === accountKey);
+    const target = connectionId === undefined ? undefined : this.connection(connectionId, provider);
+    const providerName = this.integration(provider)?.name ?? provider;
+    if (!existing && inboxId) existing = accounts.find(account => this.previousTickTickInbox(account).id === inboxId);
     if (target) {
-      if (target.secret !== previousSecret) throw new Error('This TickTick connection changed during sign-in. Open Calendars and try again.');
-      if (existing && existing !== target) throw new Error('This TickTick token is already connected to another saved account.');
-      if (!existing && !this.matchesTickTickAccount(target, discovered)) {
-        throw new Error('Calendar Hub could not match the task lists to this saved connection. Sign in with the same TickTick account, or add a separate connection.');
+      if (target.secret !== previousSecret) throw new Error('This connection changed during sign-in. Open Calendars and try again.');
+      if (existing && existing !== target) throw new Error('This account is already connected to another saved connection.');
+      if (!existing) {
+        if (provider === 'ticktick') {
+          throw new Error('Calendar Hub could not verify the Inbox for this saved connection. Sign in with the same TickTick account, or add a separate connection.');
+        }
+        if (provider !== 'google' || target.route === 'mac' || secret.route === 'mac' ||
+            !this.connectionSources(target.id).some(source => source.remote.primary && source.remoteId === accountKey)) {
+          throw new Error('Sign in with the same account to reconnect, or add a separate connection.');
+        }
       }
     }
+    if (secret.route === 'mac' && existing && !target) throw new Error('This account is already connected. Choose it in Manage calendars.');
+    if (provider === 'google' && secret.route === 'mac') {
+      const chosen = new Set(secret.googleCalendarIds);
+      const conflict = accounts.some(account => account !== target && account.route === 'mac' && (legacyMacGoogle(account)
+        ? this.profile.open(account).googleCalendarIds.some(id => chosen.has(id))
+        : discovered.some(row => row.accountId === account.accountId)));
+      if (conflict) throw new Error('This account is already connected. Choose it in Manage calendars.');
+    }
     let connection = target ?? existing;
-    const name = target?.name || String(input.name || '').trim() || (provider === 'ticktick' && existing?.name) ||
-      (secret.route === 'mac' && 'Google via Apple Calendar') || discovered.find(source => source.primary)?.name
-      || ({ ticktick: 'TickTick', google: 'Google Calendar', mac: 'Mac calendars' })[provider];
+    const primary = discovered.find(source => source.primary);
+    const base = (typeof input.name === 'string' && input.name.trim()) || (secret.accountId && discovered[0]?.accountName) ||
+      (primary?.id?.includes('@') ? primary.id : primary?.name) || providerName;
+    const name = connection?.name || availableAccountName(base, accounts, provider);
     const encrypted = this.profile.seal(secret);
     if (!connection) {
       connection = { id: randomUUID(), provider, accountKey, name, secret: encrypted };
       if (provider === 'ticktick') connection.ticktick = tickTickSettings(connection.id, [], {}, true);
       this.data.connections.push(connection);
     } else Object.assign(connection, { accountKey, name, secret: encrypted });
-    if (secret.route === 'mac') connection.route = 'mac';
-    const previous = secret.route === 'mac' ? new Set(this.data.sources.filter(source => source.connectionId === connection.id).map(source => source.id)) : null;
-    this.clients.set(connection.id, { client, timeZone });
-    this.updateSources(connection, discovered);
-    if (previous) {
-      for (const source of this.data.sources) {
-        if (source.connectionId === connection.id && !previous.has(source.id)) source.selected = true;
-      }
+    if (inboxId) connection.tickTickInboxId = inboxId;
+    if (secret.route === 'mac') {
+      connection.route = 'mac';
+      if (secret.accountId) connection.accountId = secret.accountId;
     }
+    this.clients.set(connection.id, { client, timeZone });
+    this.updateSources(connection, discovered, secret.route === 'mac');
     this.profile.save();
     return this.notifications.refresh({ read: 'changed' });
+  }
+
+  renameConnection({ connectionId, name }) {
+    const connection = this.connection(connectionId);
+    const label = typeof name === 'string' && name.trim();
+    if (!label) throw new Error('Enter an account name.');
+    if (availableAccountName(label, this.data.connections, connection.provider, connectionId) !== label) {
+      throw new Error('Another account already uses that name.');
+    }
+    connection.name = label;
+    if (connection.provider === 'ticktick') this.applyTickTickSettings(connection);
+    this.profile.save();
+    return this.notifications.refresh({ read: 'none' });
   }
 
   disconnect({ connectionId }) {
@@ -393,6 +470,10 @@ export class CalendarService {
     try {
       if (!client) throw new Error('Reconnect this account to refresh.');
       const items = await client.items(source.remote, start, end);
+      if (source.provider === 'ticktick' && !connection.tickTickInboxId && isTickTickInbox(source.remote)) {
+        const item = originalInboxItem(items);
+        if (item) connection.tickTickInboxId = item._ticktick.projectId;
+      }
       const ids = new Set(items.map(item => item.id));
       cache.items = cache.items.filter(item => !ids.has(item.id) && !overlaps(item, start, end)).concat(items);
       this.notifications.observeTickTickItems(source, items);
@@ -408,6 +489,19 @@ export class CalendarService {
 
   async state({ start, end, preferencesOnly = false, refreshNotifications = false }) {
     validateRange(start, end);
+    const legacy = this.data.connections.find(legacyMacGoogle);
+    if (legacy && !preferencesOnly) {
+      try {
+        const inventory = await this.providers.macAccountCalendars('google', { requestAccess: false });
+        const changed = splitMacGoogleConnection(this.profile, this.providers, legacy, inventory);
+        if (changed) {
+          for (const id of changed) this.clients.delete(id);
+          this.lastRange = null;
+        }
+      } catch {
+        // The saved connection remains usable while account discovery or the keychain is unavailable.
+      }
+    }
     const zone = currentTimeZone();
     if (this.lastRange?.start !== start || this.lastRange.end !== end || this.lastRange.zone !== zone) {
       this.lastRange = { start, end, zone, checks: new Map(), discoveryErrors: new Map(), visible: new Set() };
@@ -418,17 +512,30 @@ export class CalendarService {
     await this.notifications.refresh({ read: refreshNotifications ? 'all' : preferencesOnly ? 'none' : 'changed',
       checkedRange: preferencesOnly ? undefined : { start, end, health } });
     this.profile.save();
-    const sources = this.data.sources.map(({ remote, remoteId, localReadOnly, ...source }) =>
-      source.provider === 'ticktick' ? { ...source, ...listMetadata(remote) } : source);
+    const legacyIds = new Set(this.data.connections.filter(legacyMacGoogle).map(row => row.id));
+    const sources = this.data.sources.map(({ remote, remoteId, localReadOnly, ...source }) => {
+      source.itemKind = this.integration(source.provider)?.itemKind ?? (source.provider === 'ticktick' ? 'task' : 'event');
+      if (source.provider === 'ticktick') return { ...source, ...listMetadata(remote) };
+      if (source.provider === 'mac' || legacyIds.has(source.connectionId)) {
+        return { ...source, nativeAccountId: remote.accountId, nativeAccountName: remote.accountName };
+      }
+      return source;
+    });
     range.visible = new Set(sources.filter(source => source.selected).map(source => source.id));
     const items = sources.filter(s => s.selected).flatMap(source => this.cache(source.id).items
       .filter(item => !item.completed && overlaps(item, start, end) && !this.data.hidden.some(h => matches(h, source.id, item.id)))
       .map(item => publicItem(item, source)));
+    const options = this.providers.connectionOptions ?? {};
+    const googleBrowser = Boolean(options.googleBrowser || this.data.connections.some(c => c.provider === 'google' && c.route !== 'mac'));
+    const integrations = options.integrations?.map(entry => entry.id === 'google' && googleBrowser && !entry.routes.includes('browser')
+      ? { ...entry, routes: ['browser', ...entry.routes] } : entry);
     return {
-      connectionOptions: { ...this.providers.connectionOptions,
-        googleBrowser: Boolean(this.providers.connectionOptions?.googleBrowser || this.data.connections.some(c => c.provider === 'google' && c.route !== 'mac')) },
-      connections: this.data.connections.map(({ id, provider, name, route, ticktick }) =>
-        ({ id, provider, name, route, ...(ticktick && { ticktick: publicTickTickSettings(ticktick) }) })),
+      connectionOptions: { ...options, googleBrowser, integrations },
+      connections: this.data.connections.map(connection => {
+        const { id, provider, name, route, accountId, ticktick } = connection;
+        return { id, provider, name, route, ...(accountId && { accountId }), ...(legacyMacGoogle(connection) && { legacyMac: true }),
+          ...(ticktick && { ticktick: publicTickTickSettings(ticktick) }) };
+      }),
       ticktickCalendars: this.data.connections.flatMap(connection => this.tickTickCalendars.get(connection.id) ?? []),
       notificationPreferences: this.notifications.preferences(), notificationError: this.notifications.error,
       sources, items, hidden: this.data.hidden, health, uncertain: this.data.journal
@@ -459,7 +566,8 @@ export class CalendarService {
 
   async write(action, input) {
     const source = this.source(input.sourceId);
-    if (!source.selected || !source.writable || source.readOnly) throw new Error('This calendar is read-only or unselected.');
+    const integration = this.integration(source.provider);
+    if (!source.selected || !source.writable || source.readOnly || integration?.readOnly) throw new Error('This calendar is read-only or unselected.');
     const connection = this.data.connections.find(entry => entry.id === source.connectionId);
     const client = this.client(connection);
     const cache = this.cache(source.id);
@@ -472,7 +580,8 @@ export class CalendarService {
       if (original.recurring && !input.occurrence) throw new Error('Choose this occurrence before saving.');
     }
     if (typeof client[action] !== 'function') throw new Error('This calendar does not support that action.');
-    const draft = action === 'create' || action === 'update' ? checkedDraft(input, source.provider) : undefined;
+    const itemKind = integration?.itemKind ?? (source.provider === 'ticktick' ? 'task' : 'event');
+    const draft = action === 'create' || action === 'update' ? checkedDraft(input, itemKind) : undefined;
     const title = original?.title ?? draft?.title ?? '';
     if (this.data.journal.some(entry => entry.sourceId === source.id &&
       (original ? entry.targetId === original.id : entry.kind === 'create' && entry.title === title))) {

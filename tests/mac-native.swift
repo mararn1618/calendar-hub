@@ -13,6 +13,12 @@ struct MacCalendarTests {
         try expect(false, "Expected rejection: " + code)
     }
 
+    static func rejectsCommand(_ args: [String], with code: String) async throws {
+        do { _ = try await MacCalendars.run(args) }
+        catch let error as CalendarFailure { try expect(error.code == code, "Unexpected failure: " + error.code); return }
+        try expect(false, "Expected rejection: " + code)
+    }
+
     static func main() async throws {
         let dates = CalendarDates(zone: TimeZone(identifier: "Europe/Berlin")!)
         let spring = Draft(title: "Holiday", start: "2026-03-29", end: "2026-03-30", allDay: true)
@@ -57,11 +63,36 @@ struct MacCalendarTests {
         try dates.apply(spring, to: event, creating: false)
         try expect(event.isAllDay && dates.text(event.endDate, allDay: true) == spring.end, "Timed to all-day conversion")
 
-        do { _ = try await MacCalendars.run(["remove", "mac", "fixture"]) }
-        catch let failure as CalendarFailure {
-            try expect(failure.code == "READ_ONLY", "Generic Mac write")
-            return
+        let google = CalendarScope(accountId: "account-a", googleCalendarIds: ["allowed", "moved"])
+        try expect(google.includes(.google, sourceType: .calDAV, calendarType: .calDAV, account: "account-a", calendar: "allowed"), "Selected Google calendar")
+        try expect(!google.includes(.google, sourceType: .calDAV, calendarType: .calDAV, account: "account-b", calendar: "moved"), "Calendar moved to another account")
+        try expect(!google.includes(.google, sourceType: .calDAV, calendarType: .calDAV, account: "account-a", calendar: "other"), "Unselected Google calendar")
+        try expect(!google.includes(.google, sourceType: .exchange, calendarType: .calDAV, account: "account-a", calendar: "allowed"), "Wrong source type")
+        let exchange = CalendarScope(accountId: "account-b", googleCalendarIds: nil)
+        try expect(exchange.includes(.exchange, sourceType: .exchange, calendarType: .exchange, account: "account-b", calendar: "work"), "Selected Exchange account")
+        try expect(!exchange.includes(.exchange, sourceType: .exchange, calendarType: .exchange, account: "account-a", calendar: "work"), "Wrong Exchange account")
+        try expect(!exchange.includes(.exchange, sourceType: .calDAV, calendarType: .calDAV, account: "account-b", calendar: "work"), "Wrong Exchange source type")
+
+        for status in [EKAuthorizationStatus.notDetermined, .restricted, .denied, .writeOnly] {
+            try rejects("PERMISSION") { _ = try MacCalendars.needsAccessRequest(for: "accounts", status: status) }
         }
-        try expect(false, "Generic Mac route accepted a write")
+        try expect(!MacCalendars.needsAccessRequest(for: "accounts", status: .fullAccess), "Inventory uses existing full access")
+        try expect(MacCalendars.needsAccessRequest(for: "authorize", status: .notDetermined), "Explicit setup can request access")
+
+        for route in ["mac", "exchange"] {
+            for action in ["create", "update", "remove"] {
+                try await rejectsCommand([action, route, "fixture", #"{"accountId":"account-b"}"#], with: "READ_ONLY")
+            }
+        }
+        for args in [["items", "exchange", "work", "2026-11-20", "2026-11-21"],
+                     ["create", "google", "work"],
+                     ["create", "google", "work", #"{"accountId":"account-b"}"#]] {
+            try await rejectsCommand(args, with: "INVALID")
+        }
+        for action in ["items", "create", "update", "remove"] {
+            let dates = action == "items" ? ["2026-11-20", "2026-11-21"] : []
+            let args = [action, "google", "other"] + dates + [#"{"accountId":"account-a","googleCalendarIds":["allowed"]}"#]
+            try await rejectsCommand(args, with: "UNSELECTED")
+        }
     }
 }

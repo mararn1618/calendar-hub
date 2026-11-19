@@ -245,10 +245,11 @@ dialog::backdrop { background: #24343c38; }
 .dialog-footer .primary, .dialog-footer .destructive { min-width: 65px; }
 .help { font-size: 12px; line-height: 1.45; color: var(--muted); }
 .settings-subhead { font-size: 13px; font-weight: 650; }
-.connection-group { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.connection-group { flex: none; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .connection-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 11px; background: #f4f7f7; }
 .connection-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .connection-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.connection-controls { display: flex; gap: 3px; flex-wrap: wrap; justify-content: flex-end; }
 .connection-heading .text-button { font-size: 11px; min-height: 23px; }
 .connection-group > .help { padding: 7px 11px; }
 .settings-source { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 3px 11px; border-top: 1px solid #edf0f1; }
@@ -261,14 +262,17 @@ dialog::backdrop { background: #24343c38; }
 .settings-list-filter { display: flex; align-items: center; justify-content: space-between; padding: 3px 10px; border-top: 1px solid #edf0f1; }
 .settings-list-filter .text-button { font-size: 12px; }
 .source-error { flex: 0 0 100%; font-size: 11px; color: #855a25; }
-.policy-help { background: #fafcfc; border-top: 1px solid #edf0f1; }
-.provider-options { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 7px; }
+.provider-options { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }
 .provider-button { justify-content: flex-start; gap: 7px; font-size: 12px; padding: 8px; min-height: 37px; }
 .provider-button .i-plus { margin-left: auto; width: 12px; color: #71838a; }
 .provider-button .i-plus::before, .provider-button .i-plus::after { width: 8px; }
 .provider-mark { display: inline-grid; place-items: center; flex: none; width: 21px; height: 21px; border-radius: 5px; background: #e5edfa; color: #5277b4; font-size: 13px; font-weight: 750; }
 .provider-mark.google { color: #3678bd; background: #e9f0fa; }
 .provider-mark.mac { color: #a14c57; background: #f5e9eb; font-size: 17px; }
+.provider-mark.exchange { color: #08768d; background: #e2f1f5; }
+.mac-calendar-choices { display: grid; gap: 5px; margin: 0; padding: 0; border: 0; }
+.mac-calendar-choices legend { margin-bottom: 5px; }
+.mac-account-tools { display: flex; gap: 8px; flex-wrap: wrap; }
 .editor-form { display: flex; flex-direction: column; gap: 13px; }
 .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .field-label { font-size: 12px; font-weight: 570; }

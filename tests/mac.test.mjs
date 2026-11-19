@@ -7,6 +7,7 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { createMacCalendar } from '../desktop/providers/mac.mjs';
+import { startMacCalendarFixture } from './fixtures/mac-calendar.mjs';
 
 const execute = promisify(execFile);
 const calendars = [
@@ -24,7 +25,7 @@ function fixture() {
   const executeHelper = async (_executable, args, input) => {
     calls.push({ args, input });
     if (args[0] === 'items') return JSON.stringify([appointment]);
-    if (args[0] === 'sources' || args[0] === 'authorize') return JSON.stringify(calendars);
+    if (['sources', 'accounts', 'authorize'].includes(args[0])) return JSON.stringify(calendars);
     if (args[0] === 'remove') return JSON.stringify({ removed: true });
     return JSON.stringify({ ...appointment, ...input.draft, version: 'saved-version' });
   };
@@ -46,8 +47,22 @@ test('Mac permission requests require an explicit setup call and discovery keeps
   await assert.rejects(google.create(calendars[2], appointment), { code: 'READ_ONLY' });
   assert.throws(() => google.items(calendars[1], '2026-11-20', '2026-11-21'), { code: 'UNSELECTED' });
   assert.deepEqual(bridge.calls.map(call => call.args), [
-    ['authorize', 'google'], ['sources', 'mac'], ['items', 'mac', 'personal', '2026-11-20', '2026-11-21'], ['sources', 'google'],
+    ['authorize', 'google'], ['sources', 'mac'], ['items', 'mac', 'personal', '2026-11-20', '2026-11-21'],
+    ['sources', 'google', JSON.stringify({ googleCalendarIds: ['personal', 'subscribed'] })],
   ]);
+});
+
+test('native account inventory uses existing permission without asking for access after a denial', async () => {
+  const calls = [];
+  const executeHelper = async (_executable, args) => {
+    calls.push(args);
+    return JSON.stringify({ code: 'PERMISSION', error: 'Calendar access is unavailable.' });
+  };
+  const inspect = (options, input) => createMacCalendar({ ...options, executeHelper }).authorize({ ...input, requestAccess: false });
+  await assert.rejects(inspect({ provider: 'google' }), { code: 'PERMISSION' });
+  await assert.rejects(inspect({}, { google: true }), { code: 'PERMISSION' });
+  await assert.rejects(inspect({ provider: 'exchange' }), { code: 'PERMISSION' });
+  assert.deepEqual(calls, [['accounts', 'google'], ['accounts', 'google'], ['accounts', 'exchange']]);
 });
 
 test('native Google edits send the selected calendar, version, original occurrence time and guest review', async () => {
@@ -58,7 +73,7 @@ test('native Google edits send the selected calendar, version, original occurren
   assert.equal((await google.create(calendars[0], draft)).title, 'New title');
   assert.equal((await google.update(calendars[0], original, draft)).version, 'saved-version');
   assert.deepEqual(bridge.calls.at(-1), {
-    args: ['update', 'google', 'personal'],
+    args: ['update', 'google', 'personal', JSON.stringify({ googleCalendarIds: ['personal'] })],
     input: {
       notify: true, occurrence: true,
       original: { id: original.id, version: original.version, allDay: false, start: original.start },
@@ -66,8 +81,67 @@ test('native Google edits send the selected calendar, version, original occurren
     },
   });
   await google.remove(calendars[0], original, { notify: true, occurrence: true });
-  assert.deepEqual(bridge.calls.at(-1).args, ['remove', 'google', 'personal']);
+  assert.deepEqual(bridge.calls.at(-1).args, ['remove', 'google', 'personal', JSON.stringify({ googleCalendarIds: ['personal'] })]);
   await assert.rejects(google.update(calendars[0], { ...original, providerCalendarId: 'other' }, draft), { code: 'CONFLICT' });
+});
+
+test('scopes Google and Exchange by native account ID and rechecks calendar ownership before reads and writes', async t => {
+  const calendars = [
+    { id: 'google-a', accountId: 'a', calDAV: true }, { id: 'other-a', accountId: 'a', calDAV: true },
+    { id: 'google-b', accountId: 'b', calDAV: true }, { id: 'exchange-c', accountId: 'c', exchange: true },
+    { id: 'exchange-d', accountId: 'd', exchange: true }, { id: 'local', accountId: 'e' },
+  ].map(row => ({ ...row, name: 'Calendar', accountName: 'Work', writable: true }));
+  const fixture = await startMacCalendarFixture(calendars);
+  t.after(fixture.close);
+  const executeHelper = async (_executable, args, input) => {
+    const response = await fetch(fixture.origin + '/mac-helper', { method: 'POST', body: JSON.stringify({ args, input }) });
+    return response.text();
+  };
+  const client = options => createMacCalendar({ ...options, executeHelper });
+  const google = client({ provider: 'google', accountId: 'a', googleCalendarIds: ['google-a', 'google-b'] });
+  const exchange = client({ provider: 'exchange', accountId: 'c' });
+  const ids = rows => rows.map(row => row.id);
+  const inventory = await client({ provider: 'google' }).authorize({ requestAccess: false });
+  assert.deepEqual(ids(inventory), ['google-a', 'other-a', 'google-b']);
+  assert.deepEqual(Object.keys(inventory[0]).sort(), ['accountId', 'accountName', 'id', 'name', 'writable']);
+  assert.deepEqual(ids(await google.authorize({ requestAccess: false })), ['google-a', 'other-a']);
+  assert.deepEqual(ids(await client({ provider: 'exchange' }).authorize({ requestAccess: false })), ['exchange-c', 'exchange-d']);
+  assert.ok(fixture.calls.every(call => call.action === 'accounts'));
+  assert.deepEqual(ids(await client({ provider: 'google' }).authorize()), ['google-a', 'other-a', 'google-b']);
+  assert.deepEqual(ids(await google.authorize()), ['google-a', 'other-a']);
+  const exchangeCandidates = await client({ provider: 'exchange' }).authorize();
+  assert.deepEqual(exchangeCandidates.map(row => [row.accountId, row.writable]), [['c', false], ['d', false]]);
+  assert.deepEqual(await client({ provider: 'exchange' }).sources(), []);
+  assert.deepEqual(await client({ provider: 'google', accountId: 'a' }).sources(), []);
+  const sources = await google.sources();
+  assert.deepEqual(ids(sources), ['google-a']);
+  const [source] = sources;
+  const meetingSources = await exchange.sources();
+  assert.deepEqual(ids(meetingSources), ['exchange-c']);
+  const [meeting] = meetingSources;
+  assert.throws(() => google.items(calendars[2], '2026-11-20', '2026-11-21'), { code: 'UNSELECTED' });
+  assert.throws(() => google.items(calendars[1], '2026-11-20', '2026-11-21'), { code: 'UNSELECTED' });
+  assert.throws(() => exchange.items(calendars[4], '2026-11-20', '2026-11-21'), { code: 'UNSELECTED' });
+  fixture.events.set('meeting', { ...appointment, id: 'meeting', providerCalendarId: meeting.id });
+  const [exchangeEvent] = await exchange.items(meeting, '2026-11-20', '2026-11-21');
+  assert.equal(exchangeEvent.canEdit, false);
+  assert.equal(exchangeEvent.canDelete, false);
+  const forged = { ...meeting, writable: true };
+  for (const action of ['create', 'update', 'remove']) {
+    await assert.rejects(exchange[action](forged, exchangeEvent, appointment), { code: 'READ_ONLY' });
+  }
+  assert.ok(!fixture.calls.some(call => ['create', 'update', 'remove'].includes(call.action)));
+  const saved = await google.create(source, appointment);
+  calendars[0].accountId = 'b';
+  calendars[3].accountId = 'd';
+  assert.deepEqual(await google.sources(), []);
+  assert.deepEqual(await exchange.sources(), []);
+  await assert.rejects(exchange.items(meeting, '2026-11-20', '2026-11-21'), { code: 'UNAVAILABLE' });
+  await assert.rejects(google.items(source, '2026-11-20', '2026-11-21'), { code: 'UNAVAILABLE' });
+  await assert.rejects(google.create(source, appointment), { code: 'UNAVAILABLE' });
+  await assert.rejects(google.update(source, saved, appointment), { code: 'UNAVAILABLE' });
+  await assert.rejects(google.remove(source, saved), { code: 'UNAVAILABLE' });
+  assert.equal(fixture.events.get(saved.id).version, saved.version);
 });
 
 test('keeps uncertain native writes separate from known permission and conflict errors', async () => {

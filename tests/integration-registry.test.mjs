@@ -96,6 +96,19 @@ test('restoring native accounts can list calendars without requesting access', a
   assert.deepEqual(reads, [['google', { requestAccess: false }], ['exchange', { requestAccess: false }], ['google', undefined]]);
 });
 
+test('continuing native setup after visiting Settings checks access without another system prompt', async () => {
+  const reads = [];
+  const registry = desktopRegistry({
+    macCalendar: ({ provider }) => ({
+      authorize(options) { reads.push([provider, options?.requestAccess]); return [{ id: 'work', accountId: 'office' }]; },
+    }),
+  });
+  await registry.authorize({ provider: 'mac', requestAccess: false });
+  await registry.authorize({ provider: 'exchange', route: 'mac', accountId: 'office', requestAccess: false });
+  await registry.authorize({ provider: 'google', route: 'mac', accountId: 'office', googleCalendarIds: ['work'], requestAccess: false });
+  assert.deepEqual(reads, [['mac', false], ['exchange', false], ['google', false]]);
+});
+
 test('TickTick retains the token identity stored by existing profiles', async () => {
   const registry = desktopRegistry();
   const expected = createHash('sha256').update('personal-token').digest('hex');

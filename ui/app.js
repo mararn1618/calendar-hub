@@ -2,7 +2,8 @@ import { addDays, dateRangeLabel, formatDate, localDate, localTime, monday, mont
 import { $, accountLabel, button, element, errorText, healthFor, icon, iconButton, labelNativeSources, sourceContext, sourceCheckbox, tickTickCalendarCheckbox } from './dom.js';
 import { createPanels } from './panels.js';
 import { createPlanner } from './planner.js';
-import { syncIssues } from './sync-issues.js';
+import { macCalendarAccess, syncIssues } from './sync-issues.js';
+import { calendarAction } from './calendar-client.js';
 
 const emptyState = { connections: [], sources: [], ticktickCalendars: [], items: [], hidden: [], health: [], uncertain: [], notificationPreferences: {}, notificationError: null };
 let data = emptyState;
@@ -21,6 +22,8 @@ let sequence = 0;
 let pending;
 let refreshCount = 0;
 let toastTimer;
+let recheckOnReturn;
+let requestingMacAccess = false;
 const pendingSchedules = new Map();
 const scheduleKey = (sourceId, id) => JSON.stringify([sourceId, id]);
 let scrollToWorkdayOnRender = false;
@@ -48,7 +51,8 @@ function report(text, action) {
 }
 
 const panels = createPanels({
-  state: () => data, selectedDate: () => selectedDate, beginSchedule, mutate, report, toast, refresh: refreshCalendars
+  state: () => data, selectedDate: () => selectedDate, beginSchedule, mutate, report, toast, refresh: refreshCalendars,
+  macAccessButtons, refreshMacCalendars
 });
 const planner = createPlanner(viewport, {
   selectDay: day => goTo(day, 'day'), navigate, edit: panels.edit, create: defaults => panels.edit(undefined, defaults),
@@ -162,11 +166,36 @@ function banner(text, action, dismiss = false, alert = true) {
   if (dismiss) row.append(iconButton('Dismiss message', 'close', () => { notice = undefined; renderStatus(); }));
   return row;
 }
+function macAccessButtons(access, check = refreshMacCalendars, showError = report) {
+  function recheck() {
+    recheckOnReturn = undefined;
+    return check();
+  }
+  async function open() {
+    if (access.request) {
+      if (requestingMacAccess) return;
+      requestingMacAccess = true;
+      try { await calendarAction('requestCalendarAccess'); }
+      catch (error) { if (!macCalendarAccess(error.code)) showError(errorText(error)); }
+      try { await recheck(); }
+      finally { requestingMacAccess = false; }
+      return;
+    }
+    recheckOnReturn = recheck;
+    try { await calendarAction('openCalendarPrivacy'); }
+    catch {
+      recheckOnReturn = undefined;
+      showError('Open System Settings > Privacy & Security > Calendars.');
+    }
+  }
+  return [button(access.label, open, 'text-button calendar-access-action'), button('Check access', recheck, 'text-button')];
+}
+
 function renderStatus() {
-  const { summary } = syncIssues(data);
+  const { summary, macAccess, accounts } = syncIssues(data);
   const latest = data.health.map(h => h.checkedAt).filter(Boolean).sort().at(-1);
   const syncing = Boolean(pending);
-  const needsAttention = loadError || summary || data.notificationError;
+  const needsAttention = loadError || macAccess || summary || data.notificationError;
   const status = needsAttention ? 'Needs attention' : syncing ? 'Refreshing…' : !loadedRange ? 'Opening calendar' : !data.connections.length ? 'No connections' : latest ? 'Updated ' + localTime(latest) : 'Connected';
   $('#sync-status').textContent = status;
   $('#status-dot').className = 'status-dot ' + (needsAttention ? 'warning' : data.connections.length ? 'online' : '');
@@ -181,12 +210,22 @@ function renderStatus() {
     banners.push(banner(`${n} unconfirmed ${n === 1 ? 'write needs' : 'writes need'} review.`, { label: 'Review writes', action: panels.uncertainItems }));
   }
   if (loadError) banners.push(banner(loadError, retry));
-  if (data.notificationError) banners.push(banner(data.notificationError, retry));
-  if (summary) {
-    const details = button('Sync details', panels.syncDetails, 'text-button');
-    details.id = 'sync-details';
-    const row = banner(summary, retry);
-    row.append(details);
+  if (macAccess || summary || data.notificationError) {
+    const primary = macAccess?.message || summary || data.notificationError;
+    const row = banner(primary, macAccess ? undefined : retry);
+    if (macAccess) {
+      row.id = 'mac-calendar-access';
+      row.append(...macAccessButtons(macAccess));
+    }
+    const text = row.querySelector('.notice-text');
+    for (const detail of [summary, data.notificationError]) {
+      if (detail && detail !== primary) text.append(element('span', 'notice-detail', detail));
+    }
+    if (accounts.length) {
+      const details = button('Sync details', panels.syncDetails, 'text-button');
+      details.id = 'sync-details';
+      row.append(details);
+    }
     banners.push(row);
   }
   $('#notices').replaceChildren(...banners);
@@ -233,8 +272,8 @@ function renderCalendar() {
     return { ...source, color: calendar?.color || source.color, context: sourceContext(source, data.connections, calendar?.name) };
   });
   const selected = new Set(chosen.map(source => source.id));
-  const hidden = new Set(data.hidden.map(item => scheduleKey(item.sourceId, item.id)));
-  const entries = projectedItems().filter(item => selected.has(item.sourceId) && !hidden.has(scheduleKey(item.sourceId, item.id)));
+  const hidden = new Set(data.hidden.map(item => scheduleKey(item.sourceId, item.visibilityId ?? item.id)));
+  const entries = projectedItems().filter(item => selected.has(item.sourceId) && !hidden.has(scheduleKey(item.sourceId, item.visibilityId ?? item.id)));
   planner.render({ days: period.days, selectedDate, entries, calendars: chosen });
   if (scrollToWorkdayOnRender) {
     planner.scrollToWorkday();
@@ -272,6 +311,9 @@ function draw() {
 function refreshCalendars() {
   return refresh({ force: true, refreshNotifications: true });
 }
+function refreshMacCalendars() {
+  return refresh({ macOnly: true, refreshNotifications: true });
+}
 function showModel(result, key) {
   if (result.snapshotId < data.snapshotId) return;
   const connections = result.connections.map(connection => ({
@@ -288,21 +330,21 @@ function showModel(result, key) {
   renderCalendar();
   panels.sync();
 }
-function refresh({ force = false, preferencesOnly = false, refreshNotifications = false, readCache = false, navigating = false } = {}) {
+function refresh({ force = false, preferencesOnly = false, refreshNotifications = false, readCache = false, navigating = false, macOnly = false } = {}) {
   const { start, end } = range();
   const key = rangeKey({ start, end });
   const reuseChecks = preferencesOnly && loadedRange === key && !loadError;
-  if (!force && pending?.key === key && pending.serial === sequence && (!pending.reuseChecks || reuseChecks)) return pending.promise;
+  if (!force && pending?.key === key && pending.serial === sequence && (!pending.reuseChecks || reuseChecks) &&
+      (!pending.macOnly || macOnly) && (!refreshNotifications || pending.refreshNotifications)) return pending.promise;
   const serial = ++sequence;
-  const request = { key, serial, reuseChecks };
+  const request = { key, serial, reuseChecks, macOnly, refreshNotifications };
   const current = () => serial === sequence && key === rangeKey(range());
   pending = request;
   renderStatus();
   request.promise = (async () => {
     try {
-      if (!window.calendar?.state) throw new Error('Open the Calendar Hub Mac app to load your calendars.');
       if (readCache || displayedRange !== key) {
-        const saved = await window.calendar.state({ start, end, cachedOnly: true }).catch(() => undefined);
+        const saved = await calendarAction('state', { start, end, cachedOnly: true }).catch(() => undefined);
         if (!current()) return;
         if (saved) showModel(saved, key);
         else draw();
@@ -312,7 +354,8 @@ function refresh({ force = false, preferencesOnly = false, refreshNotifications 
         await new Promise(resolve => setTimeout(resolve, 65));
         if (!current()) return;
       }
-      const result = await window.calendar.state({ start, end, ...(reuseChecks && { preferencesOnly: true }), ...(refreshNotifications && { refreshNotifications: true }) });
+      const result = await calendarAction('state', { start, end, ...(reuseChecks && { preferencesOnly: true }),
+        ...(refreshNotifications && { refreshNotifications: true }), ...(macOnly && { macOnly: true }) });
       if (!current()) return;
       loadedRange = key;
       loadError = '';
@@ -332,7 +375,7 @@ async function showSavedState() {
   for (;;) {
     const { start, end } = range();
     const key = rangeKey({ start, end });
-    const result = await window.calendar.state({ start, end, cachedOnly: true });
+    const result = await calendarAction('state', { start, end, cachedOnly: true });
     if (key !== rangeKey(range())) continue;
     showModel(result, key);
     if (displayedRange === key) return;
@@ -345,13 +388,15 @@ async function mutate(method, payload) {
   const key = rangeKey(viewRange);
   let failure, receipt;
   try {
-    if (!window.calendar?.[method]) throw new Error('Open the Calendar Hub Mac app to change a calendar.');
-    if (itemWrite) {
-      const reply = await window.calendar.writeItem(method, { ...payload, viewRange });
-      if (!reply.ok) throw Object.assign(new Error(reply.message), { code: reply.code });
-      receipt = reply.value;
-    } else await window.calendar[method](payload);
+    receipt = await calendarAction(method, itemWrite ? { ...payload, viewRange } : payload);
   } catch (error) { failure = error; }
+  if (method === 'hide' || method === 'restore') {
+    if (failure) throw failure;
+    await showSavedState();
+    notice = undefined;
+    renderStatus();
+    return;
+  }
   if (itemWrite || method === 'acknowledge') {
     if (receipt && key === rangeKey(range())) showModel(receipt.state, key);
     else {
@@ -374,7 +419,8 @@ async function mutate(method, payload) {
   const preferencesOnly = method === 'setCalendarNotifications' || method === 'setCalendarColor' ||
     (!failure && (method === 'configureTickTick' || method === 'setTickTickCalendarVisible' || method === 'renameConnection'));
   while (preferencesOnly && pending && !pending.reuseChecks && pending.serial === sequence) await pending.promise;
-  await refresh({ force: true, preferencesOnly, readCache: true });
+  const macConnect = method === 'connect' && (payload.provider === 'mac' || payload.route === 'mac');
+  await refresh({ force: true, preferencesOnly, readCache: true, macOnly: macConnect, refreshNotifications: macConnect });
   if (failure) throw failure;
   notice = undefined;
   renderStatus();
@@ -396,6 +442,30 @@ function goTo(date, mode = view, scrollToWorkday = false) {
 function navigate(direction) { goTo(addDays(selectedDate, direction * range().days.length)); }
 function goToday() { goTo(localDate(), view, true); }
 
+function setSidebarCollapsed(collapsed) {
+  const sidebar = $('#sidebar');
+  const toolbar = $('#header-actions');
+  if (collapsed) {
+    toolbar.append($('#new-item'), $('#manage-calendars'), $('#refresh'));
+  } else if (sidebar.hidden) {
+    $('.mini-month').before($('#new-item'));
+    $('.source-section .section-top').append($('#manage-calendars'));
+    $('.sidebar-foot').append($('#refresh'));
+  }
+  sidebar.hidden = collapsed;
+  toolbar.hidden = !collapsed;
+  const toggle = $('#toggle-sidebar');
+  toggle.title = collapsed ? 'Show sidebar' : 'Hide sidebar';
+  toggle.setAttribute('aria-label', toggle.title);
+  toggle.setAttribute('aria-expanded', String(!collapsed));
+}
+
+setSidebarCollapsed(localStorage.getItem('sidebar-collapsed') === 'true');
+$('#toggle-sidebar').addEventListener('click', () => {
+  const collapsed = !$('#sidebar').hidden;
+  setSidebarCollapsed(collapsed);
+  localStorage.setItem('sidebar-collapsed', String(collapsed));
+});
 $('#new-item').addEventListener('click', () => panels.edit());
 $('#manage-calendars').addEventListener('click', panels.settings);
 $('#hidden-items').addEventListener('click', panels.hiddenItems);
@@ -438,7 +508,7 @@ document.addEventListener('keydown', event => {
 });
 
 let lastClock = Date.now();
-function updateClock() {
+function updateClock(refreshOnWake = true) {
   const current = localDate();
   const currentZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const woke = Date.now() - lastClock > 90000;
@@ -451,16 +521,24 @@ function updateClock() {
     void refresh({ force: true });
   } else {
     planner.clock();
-    if (woke && !document.hidden) void refresh();
+    if (refreshOnWake && woke && !document.hidden) void refresh();
   }
 }
+let foreground = document.hasFocus() && !document.hidden;
 function resume() {
-  if (document.hidden) return;
-  updateClock();
-  void refresh();
+  if (document.hidden || (foreground && !recheckOnReturn)) return;
+  foreground = true;
+  if (requestingMacAccess) return;
+  updateClock(false);
+  if (recheckOnReturn) void recheckOnReturn();
+  else void refresh();
 }
+window.addEventListener('blur', () => { foreground = false; });
 window.addEventListener('focus', resume);
-document.addEventListener('visibilitychange', resume);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) foreground = false;
+  else resume();
+});
 setInterval(updateClock, 15000);
 setInterval(() => { if (!document.hidden) void refresh(); }, 5 * 60000);
 renderDayCount();

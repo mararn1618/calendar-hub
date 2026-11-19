@@ -46,9 +46,9 @@ function macAccount(provider, name, nativeCalendar) {
     return nativeCalendar({ provider, accountId, googleCalendarIds });
   }
   const macAccountCalendars = options => client().authorize(options);
-  async function calendarsFor(accountId) {
+  async function calendarsFor(accountId, options) {
     if (!hasId(accountId)) throw new Error('Choose your ' + name + ' account from Apple Calendar.');
-    const calendars = (await macAccountCalendars()).filter(row => row.accountId === accountId);
+    const calendars = (await macAccountCalendars(options)).filter(row => row.accountId === accountId);
     if (!calendars.length) throw new Error('This ' + name + ' account is unavailable. Check Internet Accounts and choose again.');
     return calendars;
   }
@@ -64,7 +64,8 @@ function googleIntegration({ inBrowser, testOrigin }, configuredClient, mac, mac
     const chooseCalendar = 'Choose at least one calendar from your Google account.';
     if (!Array.isArray(ids) || !ids.every(hasId) || (!ids.length && !saved.length)) throw new Error(chooseCalendar);
     const legacy = legacyMac && editing && input.accountId === undefined;
-    const calendars = legacy ? await mac.macAccountCalendars() : await mac.calendarsFor(input.accountId);
+    const access = { requestAccess: input.requestAccess !== false };
+    const calendars = legacy ? await mac.macAccountCalendars(access) : await mac.calendarsFor(input.accountId, access);
     const available = new Set(calendars.map(calendar => calendar.id));
     const requested = new Set(ids);
     const selected = new Set(saved.filter(id => requested.has(id) || !available.has(id)));
@@ -111,9 +112,9 @@ function exchangeIntegration(mac, routes) {
   return {
     id: 'exchange', name: 'Exchange', itemKind: 'event', readOnly: true, routes,
     macAccountCalendars: mac.macAccountCalendars,
-    async authorize({ accountId, route }) {
+    async authorize({ accountId, route, requestAccess = true }) {
       if (route !== 'mac') throw new Error('Choose an Exchange account from Apple Calendar.');
-      await mac.calendarsFor(accountId);
+      await mac.calendarsFor(accountId, { requestAccess });
       return { route, accountId };
     },
     client: mac.client,
@@ -128,7 +129,7 @@ function macIntegration(nativeCalendar, routes) {
   const client = () => nativeCalendar({ provider: 'mac' });
   return {
     id: 'mac', name: 'Mac calendars', itemKind: 'event', readOnly: true, routes,
-    async authorize() { await client().authorize(); return {}; },
+    async authorize({ requestAccess = true }) { await client().authorize({ requestAccess }); return {}; },
     client,
     identity: () => 'this-mac',
   };

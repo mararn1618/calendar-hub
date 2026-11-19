@@ -99,7 +99,8 @@ if (!app.requestSingleInstanceLock()) {
     });
     registry.notificationCenter = testOrigin ? fixtureNotificationCenter(testOrigin) : createMacNotificationCenter();
     const service = new CalendarService(new Profile(profileDirectory, safeStorage), registry);
-    for (const action of ['state', 'setAppearance', 'connect', 'renameConnection', 'macAccountCalendars', 'macGoogleCalendars', 'openInternetAccounts', 'disconnect', 'setSource',
+    for (const action of ['state', 'setAppearance', 'connect', 'renameConnection', 'macAccountCalendars', 'macGoogleCalendars', 'openInternetAccounts',
+      'openCalendarPrivacy', 'requestCalendarAccess', 'disconnect', 'setSource',
       'configureTickTick', 'setTickTickCalendarVisible', 'setCalendarColor', 'setCalendarNotifications', 'save', 'complete', 'remove', 'hide', 'restore', 'acknowledge']) {
       ipcMain.handle('calendar:' + action, async (event, input) => {
         if (event.sender !== mainWindow?.webContents || event.senderFrame !== mainWindow.webContents.mainFrame
@@ -113,6 +114,23 @@ if (!app.requestSingleInstanceLock()) {
           if (action === 'openInternetAccounts') {
             if (!nativeAvailable) throw new Error('Open System Settings on your Mac.');
             if (!testOrigin) await shell.openExternal('x-apple.systempreferences:com.apple.Internet-Accounts-Settings.extension');
+            return { ok: true };
+          }
+          if (action === 'openCalendarPrivacy') {
+            if (!nativeAvailable) throw new Error('Open System Settings on your Mac.');
+            if (testOrigin) {
+              const response = await fetch(testOrigin + '/system-settings/calendarPrivacy', {
+                method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000)
+              });
+              if (!response.ok) throw new Error('The test settings service could not respond.');
+            } else {
+              await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars');
+            }
+            return { ok: true };
+          }
+          if (action === 'requestCalendarAccess') {
+            if (!nativeAvailable) throw new Error('Open Calendar Hub on a Mac to allow calendar access.');
+            await macCalendar({ provider: 'mac' }).authorize();
             return { ok: true };
           }
           return { ok: true, value: await service.run(action, input) };

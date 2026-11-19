@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { failedCheck, usesMacCalendars } from './sync-health.mjs';
 
 const defaults = { enabled: false, leadMinutes: 10 };
 const minute = 60_000;
@@ -30,13 +31,16 @@ function inCurrentMode(connection, id) {
 }
 
 function reminderWarning(failures, routes) {
-  if (!failures.size) return null;
-  const affected = new Set(routes.filter(({ source }) => failures.has(source.id) || failures.has(source.connectionId))
+  const otherFailures = [...failures.values()].filter(failure =>
+    !failure.code?.startsWith('CALENDAR_ACCESS') && failure.code !== 'RATE_LIMITED');
+  if (!otherFailures.length) return null;
+  const ids = new Set(otherFailures.map(failure => failure.sourceId || failure.connectionId));
+  const affected = new Set(routes.filter(({ source }) => ids.has(source.id) || ids.has(source.connectionId))
     .map(route => route.calendarId));
   const count = affected.size;
   const scope = count ? ' for ' + count + (count === 1 ? ' calendar' : ' calendars') : '';
   const summary = 'Could not refresh reminders' + scope + '.';
-  const reasons = new Set(failures.values());
+  const reasons = new Set(otherFailures.map(failure => failure.message));
   const [reason] = reasons;
   return reasons.size === 1 && reason && reason.length <= 160 ? summary + ' ' + reason : summary;
 }
@@ -123,7 +127,7 @@ export class CalendarNotifications {
     this.lastApplied = serialized;
   }
 
-  async refresh({ read = 'all', calendarId, discover = false, authorized = false, checkedRange, writtenItems } = {}) {
+  async refresh({ read = 'all', calendarId, discover = false, authorized = false, checkedRange, writtenItems, macOnly = false } = {}) {
     const enabled = Object.keys(this.data.notificationPreferences ?? {}).filter(id => this.data.notificationPreferences[id].enabled);
     const accounts = enabled.length ? this.data.connections.filter(connection => enabled.some(id => inCurrentMode(connection, id))) : [];
     try {
@@ -139,22 +143,24 @@ export class CalendarNotifications {
         this.authorization = await this.center?.authorization();
       }
       if (this.authorization !== 'allowed') {
+        this.failures.clear();
         if (this.authorization === 'denied' || this.authorization === 'undetermined') await this.replace([], true);
         this.error = this.authorization === 'unavailable' || !this.authorization ? unavailable : denied;
         return;
       }
+      const accountsToRead = macOnly ? accounts.filter(usesMacCalendars) : accounts;
       if (discover) {
-        await Promise.all(accounts.map(async connection => {
+        await Promise.all(accountsToRead.map(async connection => {
           try {
             this.service.updateSources(connection, await this.service.client(connection).sources());
             this.failures.delete(connection.id);
-          } catch (error) { this.failures.set(connection.id, error.message); }
+          } catch (error) { this.failures.set(connection.id, failedCheck(connection.id, error)); }
         }));
         this.service.profile.save();
       } else if (checkedRange) {
-        for (const connection of accounts) {
+        for (const connection of accountsToRead) {
           const failure = checkedRange.health.find(entry => entry.connectionId === connection.id && !entry.sourceId);
-          if (failure) this.failures.set(connection.id, failure.message);
+          if (failure) this.failures.set(connection.id, failure);
           else this.failures.delete(connection.id);
         }
       }
@@ -164,8 +170,12 @@ export class CalendarNotifications {
           leadMinutes: this.data.notificationPreferences[calendar.id].leadMinutes })));
       const live = new Set([...accounts.map(account => account.id), ...routes.map(route => route.source.id)]);
       for (const id of this.failures.keys()) if (!live.has(id)) this.failures.delete(id);
-      if (read !== 'none') await this.load(read === 'calendar' ? routes.filter(route => route.calendarId === calendarId) : routes,
-        accounts, read, checkedRange, writtenItems);
+      if (read !== 'none') {
+        const accountIds = new Set(accountsToRead.map(connection => connection.id));
+        const routesToRead = routes.filter(route => accountIds.has(route.source.connectionId) &&
+          (read !== 'calendar' || route.calendarId === calendarId));
+        await this.load(routesToRead, accountsToRead, read, checkedRange, writtenItems);
+      }
       this.leads = new Map(routes.map(route => [route.source.id, route.leadMinutes]));
       const requests = requestsFor(routes, this.data.cache, Date.now());
       await this.replace(requests, read === 'all');
@@ -203,7 +213,7 @@ export class CalendarNotifications {
       if (!remaining.length) return;
       let client;
       try { client = this.service.client(connection); }
-      catch (error) { this.failures.set(connection.id, error.message); }
+      catch (error) { this.failures.set(connection.id, failedCheck(connection.id, error)); }
       const iterator = remaining.values();
       const worker = async () => {
         for (const job of iterator) {
@@ -219,6 +229,6 @@ export class CalendarNotifications {
 
   rememberCheck(source, check) {
     if (check.state === 'current') this.failures.delete(source.id);
-    else this.failures.set(source.id, check.message);
+    else this.failures.set(source.id, check);
   }
 }

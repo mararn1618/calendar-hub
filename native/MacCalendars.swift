@@ -29,7 +29,9 @@ struct CalendarFailure: Error {
     static let conflict = Self("CONFLICT", "This event changed in Mac Calendar. Refresh before editing it again.")
     static let readOnly = Self("READ_ONLY", "This calendar or event is read-only.")
     static let uncertain = Self("UNCERTAIN", "Mac Calendar may have saved the change. Check the calendar before trying again.")
-    static let permission = Self("PERMISSION", "Allow Calendar Hub full calendar access in System Settings under Privacy & Security, then Calendars.")
+    static let permission = Self("CALENDAR_ACCESS", "Calendar Hub does not have Full Access to Mac calendars.")
+    static let notRequested = Self("CALENDAR_ACCESS_NOT_REQUESTED", "Calendar Hub has not requested access to Mac calendars.")
+    static let restricted = Self("CALENDAR_ACCESS_RESTRICTED", "This Mac restricts Calendar Hub’s access to calendars.")
     static let invalid = Self("INVALID", "Check the event title, dates and calendar selection.")
 }
 
@@ -170,6 +172,11 @@ struct NativeCalendars {
         return (external == nil ? "local:" : "uid:") + Data(value.utf8).base64EncodedString() + occurrenceKey(event)
     }
 
+    static func exchangeVisibilityId(_ externalId: String?, recurring: Bool, occurrence: String) -> String? {
+        guard let uid = externalId, !uid.isEmpty, !recurring || !occurrence.isEmpty else { return nil }
+        return "uid:" + Data(uid.utf8).base64EncodedString() + occurrence
+    }
+
     func revision(_ event: EKEvent, id: String) throws -> String {
         let fields: CalendarRow = [
             "id": id, "calendar": event.calendar.calendarIdentifier, "title": event.title ?? "",
@@ -196,6 +203,11 @@ struct NativeCalendars {
             "canComplete": false, "completed": false
         ]
         if route == .google, let external = event.calendarItemExternalIdentifier { result["externalId"] = external }
+        if calendar.source?.sourceType == .exchange,
+           let visibilityId = Self.exchangeVisibilityId(event.calendarItemExternalIdentifier, recurring: rights.recurring,
+                                                       occurrence: occurrenceKey(event)) {
+            result["visibilityId"] = visibilityId
+        }
         return result
     }
 
@@ -266,8 +278,10 @@ struct MacCalendars {
 
     static func needsAccessRequest(for action: String, status: EKAuthorizationStatus) throws -> Bool {
         if status == .fullAccess { return false }
-        guard action == "authorize", status != .denied, status != .restricted else { throw CalendarFailure.permission }
-        return true
+        if status == .restricted { throw CalendarFailure.restricted }
+        if action == "authorize", status == .notDetermined || status == .writeOnly { return true }
+        if status == .notDetermined { throw CalendarFailure.notRequested }
+        throw CalendarFailure.permission
     }
 
     static func run(_ args: [String]) async throws -> Any {

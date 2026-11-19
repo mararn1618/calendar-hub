@@ -3,12 +3,13 @@ import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { createNotificationFixture } from './notification-center.mjs';
 
-export async function startMacCalendarFixture(calendars) {
+export function createMacCalendarFixture(calendars) {
   const events = new Map();
   const calls = [];
   const controls = {};
+  const settingsOpened = [];
   const notifications = createNotificationFixture();
-  const server = createServer(async (request, response) => {
+  async function handle(request, response) {
     const reply = (result, status = 200) => {
       response.writeHead(status, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify(result));
@@ -19,6 +20,10 @@ export async function startMacCalendarFixture(calendars) {
       for await (const chunk of request) chunks.push(chunk);
       const contents = Buffer.concat(chunks).toString();
       if (request.url.startsWith('/notification-center/')) return reply(notifications.call(request.url, contents));
+      if (request.url === '/system-settings/calendarPrivacy') {
+        settingsOpened.push('calendarPrivacy');
+        return reply({});
+      }
       if (request.url !== '/mac-helper') return reply({}, 404);
       const { args, input } = JSON.parse(contents);
       const [action, route] = args;
@@ -28,6 +33,12 @@ export async function startMacCalendarFixture(calendars) {
       const call = { action, route, calendarId, input, accountId: scope.accountId };
       calls.push(call);
       if (!['mac', 'google', 'exchange'].includes(route) || !length) return reply({ error: 'Invalid route.', code: 'INVALID' });
+      if (controls.beforeRead && (action === 'sources' || action === 'items')) await controls.beforeRead(call);
+      if (controls.calendarAccess === 'undetermined') {
+        if (action !== 'authorize') return reply({ error: 'Calendar access has not been requested.', code: 'CALENDAR_ACCESS_NOT_REQUESTED' });
+        controls.calendarAccess = controls.declineCalendarAccess ? 'denied' : 'full';
+      }
+      if (controls.calendarAccess === 'denied') return reply({ error: 'Full Calendar access is required.', code: 'CALENDAR_ACCESS' });
       const writing = ['create', 'update', 'remove'].includes(action);
       if (writing && route !== 'google') return reply({ error: 'Calendar is read-only.', code: 'READ_ONLY' });
       const accountInventory = action === 'authorize' || action === 'accounts';
@@ -71,11 +82,17 @@ export async function startMacCalendarFixture(calendars) {
     } catch (error) {
       return reply({ error: error.message, code: 'FIXTURE' }, 500);
     }
-  });
+  }
+  return { calls, events, controls, settingsOpened, notifications: notifications.state, handle };
+}
+
+export async function startMacCalendarFixture(calendars) {
+  const fixture = createMacCalendarFixture(calendars);
+  const server = createServer(fixture.handle);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   return {
-    calls, events, controls, notifications: notifications.state, origin: `http://127.0.0.1:${server.address().port}`,
+    ...fixture, origin: `http://127.0.0.1:${server.address().port}`,
     close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }),
   };
 }

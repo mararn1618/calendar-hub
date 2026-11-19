@@ -35,7 +35,7 @@ export function createMacCalendar({ executable, provider, accountId, googleCalen
     }
     let result;
     try { result = JSON.parse(stdout); } catch { throw writes.has(args[0]) ? unclear() : failure('NATIVE', 'Mac Calendar returned an incomplete response.'); }
-    if (result?.error) throw failure(result.code || 'NATIVE', result.error);
+    if (result?.error) throw failure(result.code === 'PERMISSION' ? 'CALENDAR_ACCESS' : result.code || 'NATIVE', result.error);
     if (!writes.has(args[0]) && !Array.isArray(result)) throw failure('NATIVE', 'Mac Calendar returned an incomplete list.');
     return result;
   }

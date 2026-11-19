@@ -63,7 +63,7 @@ function fixtureAccount(day, zone, id, multipleAccounts) {
     googleRefresh: 'fixture-google-refresh' + suffix, tickToken: null };
 }
 
-export async function startProviderServer({ multipleAccounts = false } = {}) {
+export async function startProviderServer({ multipleAccounts = false, macCalendar } = {}) {
   const day = civilDay(), zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const accounts = [fixtureAccount(day, zone, 'first', multipleAccounts)];
   if (multipleAccounts) accounts.push(fixtureAccount(day, zone, 'second', true));
@@ -75,6 +75,9 @@ export async function startProviderServer({ multipleAccounts = false } = {}) {
 
   const server = createServer(async (request, response) => {
     const u = new URL(request.url, origin), method = request.method;
+    if (macCalendar && (u.pathname === '/mac-helper' || u.pathname.startsWith('/system-settings/'))) {
+      return macCalendar.handle(request, response);
+    }
     const buffers = [];
     for await (const chunk of request) buffers.push(chunk);
     const contents = Buffer.concat(buffers).toString();
@@ -179,6 +182,7 @@ export async function startProviderServer({ multipleAccounts = false } = {}) {
         }
         if (method === 'DELETE') { entries.delete(id); return json(204); }
       } else {
+        if (method === 'GET' && controls.tickReadStatus) return json(controls.tickReadStatus);
         const [first, second, third, id, action] = parts;
         if (first === 'project' && !second) {
           const offset = Number(u.searchParams.get('offset') || 0);

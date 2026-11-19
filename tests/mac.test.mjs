@@ -59,9 +59,9 @@ test('native account inventory uses existing permission without asking for acces
     return JSON.stringify({ code: 'PERMISSION', error: 'Calendar access is unavailable.' });
   };
   const inspect = (options, input) => createMacCalendar({ ...options, executeHelper }).authorize({ ...input, requestAccess: false });
-  await assert.rejects(inspect({ provider: 'google' }), { code: 'PERMISSION' });
-  await assert.rejects(inspect({}, { google: true }), { code: 'PERMISSION' });
-  await assert.rejects(inspect({ provider: 'exchange' }), { code: 'PERMISSION' });
+  await assert.rejects(inspect({ provider: 'google' }), { code: 'CALENDAR_ACCESS' });
+  await assert.rejects(inspect({}, { google: true }), { code: 'CALENDAR_ACCESS' });
+  await assert.rejects(inspect({ provider: 'exchange' }), { code: 'CALENDAR_ACCESS' });
   assert.deepEqual(calls, [['accounts', 'google'], ['accounts', 'google'], ['accounts', 'exchange']]);
 });
 
@@ -147,7 +147,7 @@ test('scopes Google and Exchange by native account ID and rechecks calendar owne
 test('keeps uncertain native writes separate from known permission and conflict errors', async () => {
   for (const [response, code] of [
     ['{}', 'UNCERTAIN'], ['broken response', 'UNCERTAIN'], [JSON.stringify({ ...appointment, providerCalendarId: 'other' }), 'UNCERTAIN'],
-    ['{"error":"Changed","code":"CONFLICT"}', 'CONFLICT'], ['{"error":"Denied","code":"PERMISSION"}', 'PERMISSION'],
+    ['{"error":"Changed","code":"CONFLICT"}', 'CONFLICT'], ['{"error":"Denied","code":"PERMISSION"}', 'CALENDAR_ACCESS'],
   ]) {
     const google = createMacCalendar({ googleCalendarIds: ['personal'], executeHelper: async () => response });
     await assert.rejects(google.update(calendars[0], appointment, appointment), { code });

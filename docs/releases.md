@@ -8,15 +8,15 @@ The first preview is `0.4.0`. Choose the next version by hand. During the previe
 
 ## Publish
 
-From an up-to-date `main`, set the version in the manifest and lockfile and update the DMG link at the top of the README. For example, to publish a patch after `0.5.1`, run these commands. Git opens an editor for the tag message. Describe what changed for people downloading the app. That message appears on the release page.
+From an up-to-date `main`, set the version in the manifest and lockfile and update the DMG link at the top of the README. For example, to publish a patch after `0.6.0`, run these commands. Git opens an editor for the tag message. Describe what changed for people downloading the app. That message appears on the release page.
 
 ```sh
-npm version 0.5.2 --no-git-tag-version
+npm version 0.6.1 --no-git-tag-version
 # Update the download link in README.md.
 git add package.json package-lock.json README.md
-git commit -m "Prepare version 0.5.2"
-git tag -a v0.5.2
-git push origin v0.5.2
+git commit -m "Prepare version 0.6.1"
+git tag -a v0.6.1
+git push origin v0.6.1
 ```
 
 The tag must match both package files. Follow the run under **Actions → Mac preview release**. Once the download is public, run `git push origin main` to put the working link on the repository homepage. A failed check leaves the download unpublished. For a temporary runner or network failure, use **Re-run failed jobs**. If the tagged code needs a fix, commit it and tag the next version. Keep published tags and assets intact. [Release runs](https://github.com/mararn1618/calendar-hub/actions/workflows/release.yml)
@@ -29,4 +29,4 @@ Choose **Actions → Mac preview release → Run workflow** to test a branch and
 
 On an Apple Silicon Mac, `npm ci`, `npm run package:mac`, then `npm run package:dmg` produce the DMG and its checksum under `build/release/`. The mounted image contains the app, a shortcut to Applications and the bundled license notices.
 
-To verify a download, save the DMG and its checksum in the same folder. For version 0.5.0, run `shasum -a 256 -c Calendar-Hub-0.5.0-arm64.dmg.sha256`. From the matching source tag, `bash scripts/package-dmg.sh --verify /path/to/Calendar-Hub-0.5.0-arm64.dmg` also checks the mounted app’s version, architecture and signature.
+To verify a download, save the DMG and its checksum in the same folder. For version 0.6.0, run `shasum -a 256 -c Calendar-Hub-0.6.0-arm64.dmg.sha256`. From the matching source tag, `bash scripts/package-dmg.sh --verify /path/to/Calendar-Hub-0.6.0-arm64.dmg` also checks the mounted app’s version, architecture and signature.

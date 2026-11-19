@@ -34,3 +34,33 @@ test('similarly named accounts have separate sync details that clear when they r
   health[1].state = 'current';
   assert.deepEqual(syncIssues({ health, connections }), { accounts: [], summary: '' });
 });
+
+test('Mac accounts and reminders share one access instruction when TickTick also limits requests', () => {
+  const connections = [
+    { id: 'home', provider: 'google', route: 'mac', providerName: 'Google Calendar', name: 'Home' },
+    { id: 'work', provider: 'exchange', route: 'mac', providerName: 'Exchange', name: 'Work' },
+    tickTick,
+  ];
+  const denied = { code: 'CALENDAR_ACCESS', message: 'Full calendar access is required.' };
+  const health = [
+    { connectionId: 'home', sourceId: 'personal', state: 'stale', ...denied },
+    { connectionId: 'work', state: 'error', ...denied },
+    { connectionId: 'tasks', sourceId: 'inbox', state: 'stale', code: 'RATE_LIMITED', status: 429, message: reason },
+  ];
+  const notificationFailures = [{ connectionId: 'work', sourceId: 'meetings', ...denied }];
+  const issues = syncIssues({ connections, health, notificationFailures });
+  assert.match(issues.macAccess?.message || issues.summary, /Calendar Hub.*Full Access/);
+  assert.match(issues.summary, /TickTick.*limit/i);
+  assert.equal(issues.accounts.length, 3);
+  assert.equal(issues.accounts.find(account => account.label.includes('Work')).entries.length, 2);
+});
+
+test('a reminder-only access failure has the same recovery and Google web access stays separate', () => {
+  const connections = [google, { id: 'local', provider: 'mac', name: 'On My Mac' }];
+  const health = [{ connectionId: google.id, state: 'error', code: 'PERMISSION', message: 'Google denied access.' }];
+  const explicitRequest = { connectionId: 'local', code: 'CALENDAR_ACCESS_NOT_REQUESTED', message: 'Calendar access has not been requested.' };
+  const issues = syncIssues({ connections, health, notificationFailures: [explicitRequest] });
+  assert.equal(issues.macAccess?.label, 'Allow Calendar Access');
+  assert.match(issues.summary, /Google denied access/);
+  assert.equal(syncIssues({ connections, health }).macAccess, undefined);
+});

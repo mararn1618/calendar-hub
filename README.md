@@ -1,6 +1,6 @@
 # Calendar Hub
 
-**[Download Calendar Hub 0.5.0 for Mac](https://github.com/mararn1618/calendar-hub/releases/download/v0.5.0/Calendar-Hub-0.5.0-arm64.dmg)** · [All releases and previews](https://github.com/mararn1618/calendar-hub/releases)
+**[Download Calendar Hub 0.6.0 for Mac](https://github.com/mararn1618/calendar-hub/releases/download/v0.6.0/Calendar-Hub-0.6.0-arm64.dmg)** · [All releases and previews](https://github.com/mararn1618/calendar-hub/releases)
 
 A Mac calendar for TickTick tasks, Google appointments and read-only work meetings. Use Day, a Monday-to-Sunday Week or a rolling view of 1 to 31 days.
 
@@ -14,6 +14,8 @@ The preview uses an ad hoc signature without Apple notarization. macOS may requi
 
 Open **Manage calendars → Appearance** and choose **Light** or **Dark**. Light is the default. Calendar Hub remembers your choice on this Mac. Each provider has a sidebar heading, with its connected accounts and calendars underneath.
 
+Click the sidebar button beside the date to give the calendar the full window. **New item**, **Manage calendars** and **Refresh** move into the header. Click the same button to bring the sidebar back. Calendar Hub remembers this choice when you reopen it.
+
 Use the color control beside any calendar to change its sidebar marker and its entries on the timeline. Colors are local to Calendar Hub. TickTick calendars can have separate colors in the account, folder and custom layouts.
 
 The rolling view shows your chosen length, for example **Next 5 Days**. When you switch views, entries already loaded for those dates stay visible while the app checks for updates.
@@ -24,7 +26,7 @@ Drag from the start time to the end time on an empty part of the calendar. The p
 
 Drag an existing task or appointment to move it. Drag its top or bottom edge to resize it. The entry stays at the time you chose and looks muted until the provider confirms. A rejected edit returns to the saved time. If the connection drops before the outcome is known, open **Review writes** to check the item.
 
-If several TickTick lists fail to refresh, the banner shows how many are affected. Open **Sync details** to see the lists and their last check.
+If TickTick limits requests, Calendar Hub shows one warning and retries automatically. Open **Sync details** to see which lists are affected and when they were last checked.
 
 ## Run on this Mac
 
@@ -43,11 +45,15 @@ Open **Manage calendars** and choose a provider under **Add an account**. Repeat
 
 For a build that connects directly to the Google Calendar API, the app publisher enables that API, registers one **Desktop app** OAuth client and sets `CALENDAR_HUB_GOOGLE_DESKTOP_CONFIG` to the downloaded JSON file when running `npm run package:mac`. For an external project in Testing, the publisher adds the testers in **Google Auth Platform → Audience → Test users**. Users choose **Continue with Google** and select their account in the browser. The same desktop client works for each account. A self-built installation can also load its desktop client once in **Connect Google Calendar**. [Google desktop authorization](https://developers.google.com/identity/protocols/oauth2/native-app) · [Consent screen setup](https://developers.google.com/workspace/guides/configure-oauth-consent)
 
+If macOS blocks calendar access, click **Open Calendar Privacy Settings**, turn on Calendar Hub and choose **Full Access**. Calendar Hub checks your Mac calendars when you return. On a Mac that has never asked for permission, choose **Allow Calendar Access** first. **Sync details** shows individual calendar errors.
+
 Older Google connections through Apple Calendar split into accounts when the Mac can identify the owner of each saved calendar. Selections, hidden events, reminder settings and pending edits follow their calendars.
 
 Use one Google sign-in route per account to see its calendars once. TickTick uses the private Inbox to recognize an account when its access token changes. If TickTick cannot identify an empty Inbox, Calendar Hub keeps the saved connection and lets you add a separate one.
 
-Calendar Hub uses the existing profile at `~/Library/Application Support/Calendar Central` so that upgrades retain connected accounts, list selections and reminder settings. Provider credentials are encrypted using macOS keychain-backed storage. In the calendar, right-click an appointment to hide it locally. **Hidden items** restores it. **Delete from Google** asks for confirmation before changing the source.
+Calendar Hub uses the existing profile at `~/Library/Application Support/Calendar Central` so that upgrades retain connected accounts, list selections and reminder settings. Provider credentials are encrypted using macOS keychain-backed storage.
+
+Right-click a timed or all-day appointment and choose **Hide in Calendar Hub** to remove it from your view. This also works for saved Exchange entries while access is unavailable. Use **Hidden items → Restore** to show it again. **Delete from Google** asks for confirmation before changing the source.
 
 ## Organize TickTick
 

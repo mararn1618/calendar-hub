@@ -13,7 +13,7 @@ function workspace(t, current = now) {
   const profile = { data: { sources: [], connections: [], hidden: [], journal: [], cache: {} },
     seal: secret => secret, open: connection => connection.secret, save() {} };
   const calendars = { ticktick: [list('studio'), list('home')], google: [list('work'), list('personal')], mac: [list('meetings')] };
-  const rows = new Map(), offline = new Set(), reads = [], discoveries = [];
+  const rows = new Map(), offline = new Set(), errors = new Map(), reads = [], discoveries = [];
   const center = { status: 'undetermined', decision: 'allowed', checks: 0, prompts: 0, queue: [], replacements: 0,
     async authorization() { this.checks++; return this.status; },
     async requestAuthorization() { this.prompts++; this.status = this.decision; return this.status; },
@@ -27,11 +27,13 @@ function workspace(t, current = now) {
       return {
         sources: async () => {
           discoveries.push(provider);
+          if (errors.has(provider)) throw errors.get(provider);
           if (offline.has(provider)) throw new Error('Directory offline');
           return structuredClone(calendars[provider]);
         },
         items: async (source, start, end) => {
           reads.push({ id: source.id, start, end });
+          if (errors.has(source.id)) throw errors.get(source.id);
           if (offline.has(source.id)) throw new Error('Source offline');
           const from = Date.parse(start + 'T00:00:00'), until = Date.parse(end + 'T00:00:00');
           return structuredClone((rows.get(source.id) ?? []).filter(row => !row.start ||
@@ -55,8 +57,60 @@ function workspace(t, current = now) {
   const bell = (calendarId, enabled, leadMinutes) => run('setCalendarNotifications', { calendarId, enabled, leadMinutes });
   const queue = () => Object.fromEntries(center.queue.map(reminder => [reminder.title, reminder.fireAt]));
   const view = () => run('state', { ...unrelated, preferencesOnly: true });
-  return { profile, center, reads, discoveries, rows, calendars, offline, connect, restart, bell, queue, view, run };
+  return { profile, center, reads, discoveries, rows, calendars, offline, errors, connect, restart, bell, queue, view, run };
 }
+
+test('Mac permission recovery refreshes hidden reminders and cached events without calling a limited provider', async t => {
+  const { connect, run, view, bell, rows, reads, discoveries, errors, queue } = workspace(t);
+  await connect('mac');
+  await connect('ticktick');
+  const mac = (await view()).sources.find(source => source.provider === 'mac');
+  await run('setSource', { sourceId: mac.id, selected: true });
+  const window = { start: '2026-11-19', end: '2026-11-20' };
+  rows.set('meetings', [item('meeting', '2026-11-19T13:00:00Z')]);
+  await bell(mac.id, true, 10);
+  await run('state', window);
+  const denied = Object.assign(new Error('Full calendar access is required.'), { code: 'CALENDAR_ACCESS' });
+  const limited = Object.assign(new Error('TickTick reached its request limit.'), { code: 'RATE_LIMITED', status: 429 });
+  for (const id of ['mac', 'meetings']) errors.set(id, denied);
+  for (const id of ['ticktick', 'studio', 'home']) errors.set(id, limited);
+  const stale = await run('state', { ...window, refreshNotifications: true });
+  assert(stale.items.some(row => row.title === 'meeting'));
+  assert(stale.health.some(entry => entry.sourceId === mac.id && entry.state === 'stale' && entry.code === denied.code));
+  assert(stale.health.some(entry => !entry.sourceId && entry.status === 429 && entry.code === limited.code));
+  assert(stale.notificationFailures.some(entry => entry.code === denied.code && entry.sourceId === mac.id));
+  assert.equal(stale.notificationError, null);
+  assert.deepEqual(queue(), { meeting: '2026-11-19T12:50:00.000Z' });
+  await run('setSource', { sourceId: mac.id, selected: false });
+  rows.set('meetings', [item('moved', '2026-11-19T15:00:00Z')]);
+  for (const id of ['mac', 'meetings']) errors.delete(id);
+  reads.length = discoveries.length = 0;
+  const recovered = await run('state', { ...window, macOnly: true, refreshNotifications: true });
+  assert.deepEqual(discoveries, ['mac']);
+  assert.deepEqual(reads.map(row => row.id), ['meetings']);
+  assert.deepEqual(recovered.notificationFailures, []);
+  assert(recovered.health.some(entry => entry.status === 429));
+  assert.deepEqual(queue(), { moved: '2026-11-19T14:50:00.000Z' });
+});
+
+test('checking Mac access preserves a newer TickTick reminder failure outside the timeline refresh', async t => {
+  const { connect, run, view, bell, errors, reads } = workspace(t);
+  await connect('mac');
+  await connect('ticktick');
+  const calendar = (await view()).ticktickCalendars[0];
+  await bell(calendar.id, true, 0);
+  const range = { start: '2026-11-19', end: '2026-11-28' };
+  await run('state', range);
+  errors.set('studio', Object.assign(new Error('TickTick reached its request limit.'), { code: 'RATE_LIMITED', status: 429 }));
+  await run('refreshNotifications');
+  const failures = (await run('state', { ...range, cachedOnly: true })).notificationFailures;
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].status, 429);
+  reads.length = 0;
+  const checked = await run('state', { ...range, macOnly: true, refreshNotifications: true });
+  assert.deepEqual(checked.notificationFailures, failures);
+  assert.deepEqual(reads, []);
+});
 
 test('reminders default to muted and ask for permission only on an explicit enable', async t => {
   const { connect, view, run, center, reads, discoveries, bell, restart } = workspace(t);

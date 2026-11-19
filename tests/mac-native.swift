@@ -47,6 +47,17 @@ struct MacCalendarTests {
         let solo = EventRights(calendarAllows: true, organizerIsCurrent: nil, hasAttendees: false, recurring: false, knownOccurrence: false)
         try solo.review(Change(original: nil, draft: nil, notify: nil, occurrence: nil))
 
+        let firstKey = NativeCalendars.exchangeVisibilityId("series", recurring: true, occurrence: "|2026-11-19")
+        try expect(firstKey == "uid:c2VyaWVz|2026-11-19", "Exchange all-day occurrence identity")
+        try expect(NativeCalendars.exchangeVisibilityId("series", recurring: true, occurrence: "|2026-11-26") != firstKey,
+                   "The next occurrence has a distinct identity")
+        try expect(NativeCalendars.exchangeVisibilityId("series", recurring: true, occurrence: "") == nil,
+                   "Missing occurrence dates cannot identify an entry in a series")
+        try expect(NativeCalendars.exchangeVisibilityId("series", recurring: false, occurrence: "") == "uid:c2VyaWVz",
+                   "A non-recurring Exchange event uses its server ID")
+        try expect(NativeCalendars.exchangeVisibilityId(nil, recurring: false, occurrence: "") == nil,
+                   "Missing server IDs retain the local identity")
+
         let store = EKEventStore()
         let event = EKEvent(eventStore: store)
         event.notes = "Original fixture notes"
@@ -73,8 +84,13 @@ struct MacCalendarTests {
         try expect(!exchange.includes(.exchange, sourceType: .exchange, calendarType: .exchange, account: "account-a", calendar: "work"), "Wrong Exchange account")
         try expect(!exchange.includes(.exchange, sourceType: .calDAV, calendarType: .calDAV, account: "account-b", calendar: "work"), "Wrong Exchange source type")
 
-        for status in [EKAuthorizationStatus.notDetermined, .restricted, .denied, .writeOnly] {
-            try rejects("PERMISSION") { _ = try MacCalendars.needsAccessRequest(for: "accounts", status: status) }
+        for action in ["accounts", "sources", "items"] {
+            try rejects("CALENDAR_ACCESS_NOT_REQUESTED") { _ = try MacCalendars.needsAccessRequest(for: action, status: .notDetermined) }
+            try rejects("CALENDAR_ACCESS") { _ = try MacCalendars.needsAccessRequest(for: action, status: .writeOnly) }
+        }
+        for action in ["accounts", "authorize"] {
+            try rejects("CALENDAR_ACCESS") { _ = try MacCalendars.needsAccessRequest(for: action, status: .denied) }
+            try rejects("CALENDAR_ACCESS_RESTRICTED") { _ = try MacCalendars.needsAccessRequest(for: action, status: .restricted) }
         }
         try expect(!MacCalendars.needsAccessRequest(for: "accounts", status: .fullAccess), "Inventory uses existing full access")
         try expect(MacCalendars.needsAccessRequest(for: "authorize", status: .notDetermined), "Explicit setup can request access")

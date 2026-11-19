@@ -11,7 +11,7 @@
 </head>
 <body>
   <div class="workspace">
-    <aside class="sidebar" aria-label="Calendar navigation">
+    <aside id="sidebar" class="sidebar" aria-label="Calendar navigation">
       <div class="brand"><img class="app-icon" src="./calendar-hub-96.png" width="29" height="29" alt=""><span>Calendar Hub</span></div>
       <button id="new-item" class="primary new-item" type="button"><span class="icon i-plus" aria-hidden="true"></span>New item<span class="shortcut" aria-hidden="true">N</span></button>
       <section class="mini-month" aria-label="Date picker">
@@ -36,7 +36,11 @@
     </aside>
     <main>
       <header class="main-head">
-        <div class="range-titles"><div id="range-context"></div><h1 id="range-title">Calendar</h1></div>
+        <div class="range-overview">
+          <button type="button" id="toggle-sidebar" class="icon-button" aria-label="Hide sidebar" title="Hide sidebar" aria-controls="sidebar" aria-expanded="true"><span class="icon i-sidebar" aria-hidden="true"></span></button>
+          <div class="range-titles"><div id="range-context"></div><h1 id="range-title">Calendar</h1></div>
+        </div>
+        <div id="header-actions" hidden></div>
         <nav class="date-navigation" aria-label="Navigate dates">
           <button type="button" id="prev" class="icon-button" aria-label="Previous date range" title="Previous date range"><span class="icon i-left" aria-hidden="true"></span></button>
           <button type="button" id="today" title="Today (T)">Today</button>

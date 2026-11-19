@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { CalendarNotifications } from './calendar-notifications.mjs';
+import { failedCheck, usesMacCalendars } from './sync-health.mjs';
 import { availableAccountName, legacyMacGoogle, splitMacGoogleConnection } from './account-connections.mjs';
 import { applyTickTickCalendars, configureTickTickSettings, isTickTickInbox, listMetadata, orderedTickTickSources,
   publicTickTickSettings, retainTickTickFolders, tickTickSettings } from './ticktick-calendars.mjs';
@@ -7,7 +8,8 @@ import { applyTickTickCalendars, configureTickTickSettings, isTickTickInbox, lis
 const calendarDay = /^\d{4}-\d{2}-\d{2}$/;
 const isoDay = date => date.toISOString().slice(0, 10);
 const key = (connectionId, remoteId) => JSON.stringify([connectionId, remoteId]);
-const matches = (entry, sourceId, id) => entry.sourceId === sourceId && entry.id === id;
+const sameHiddenItem = (entry, sourceId, item) => entry.sourceId === sourceId && (
+  entry.visibilityId && item.visibilityId ? entry.visibilityId === item.visibilityId : entry.id === item.id);
 const currentTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 const tickTickInboxId = sources => sources.find(source => isTickTickInbox(source) && source.id !== 'inbox')?.id;
 const originalInboxItem = items => items?.find(item => item._ticktick?.projectId && item._ticktick.projectId !== 'inbox');
@@ -16,7 +18,7 @@ const scheduleOf = ({ start, end, allDay }) => ({ start, end, allDay });
 
 function currentHealth(source, connection, checkedAt) {
   return { connectionId: connection.id, sourceId: source.id, state: 'current', checkedAt,
-    message: source.provider === 'mac' || connection.route === 'mac' ? 'Checked the Mac calendar database.' : 'Checked the source.' };
+    message: usesMacCalendars(connection) ? 'Checked the Mac calendar database.' : 'Checked the source.' };
 }
 
 function isDay(value) {
@@ -70,6 +72,7 @@ function checkedDraft(input, itemKind) {
 function publicItem(item, source) {
   return {
     id: item.id, sourceId: source.id, title: item.title, start: item.start, end: item.end,
+    ...(item.visibilityId && { visibilityId: item.visibilityId }),
     allDay: item.allDay, completed: Boolean(item.completed), version: item.version,
     recurring: Boolean(item.recurring), hasAttendees: Boolean(item.hasAttendees),
     canEdit: Boolean(source.writable && !source.readOnly && item.canEdit),
@@ -104,6 +107,7 @@ export class CalendarService {
 
   run(operation, input = {}) {
     if (operation === 'connect') return this.connect(input);
+    if (operation === 'hide' || operation === 'restore') return Promise.resolve().then(() => this[operation](input));
     if (operation === 'macAccountCalendars') return this.macAccountCalendars(input);
     if (operation === 'macGoogleCalendars') return this.macAccountCalendars({ provider: 'google' }, true);
     if (operation === 'state') {
@@ -112,13 +116,14 @@ export class CalendarService {
       const zone = currentTimeZone();
       const preferencesOnly = input.preferencesOnly === true;
       const refreshNotifications = input.refreshNotifications === true;
+      const macOnly = input.macOnly === true;
       const pending = this.pendingState;
       if (pending && pending.start === start && pending.end === end && pending.zone === zone &&
-          pending.preferencesOnly === preferencesOnly && pending.refreshNotifications === refreshNotifications) {
+          pending.preferencesOnly === preferencesOnly && pending.refreshNotifications === refreshNotifications && pending.macOnly === macOnly) {
         return pending.result;
       }
       const result = this.enqueueRefresh(writtenItems => this.state(input, writtenItems));
-      this.pendingState = { start, end, zone, preferencesOnly, refreshNotifications, result };
+      this.pendingState = { start, end, zone, preferencesOnly, refreshNotifications, macOnly, result };
       const clear = () => { if (this.pendingState?.result === result) this.pendingState = null; };
       result.then(clear, clear);
       return result;
@@ -143,8 +148,8 @@ export class CalendarService {
     return result;
   }
 
-  async macAccountCalendars({ provider, connectionId }, allChosen = false) {
-    const candidates = await this.providers.macAccountCalendars(provider);
+  async macAccountCalendars({ provider, connectionId, requestAccess = true }, allChosen = false) {
+    const candidates = await this.providers.macAccountCalendars(provider, { requestAccess });
     const accounts = this.data.connections.filter(entry => entry.provider === provider && entry.route === 'mac');
     const target = connectionId === undefined ? undefined : this.connection(connectionId, provider);
     if (target && target.route !== 'mac') throw new Error('Choose an account from Apple Calendar.');
@@ -494,8 +499,7 @@ export class CalendarService {
 
   async refreshConnection(connection, range, preferencesOnly) {
     let client;
-    const connectionError = error => range.discoveryErrors.set(connection.id,
-      { connectionId: connection.id, state: 'error', message: error.message, checkedAt: null });
+    const connectionError = error => range.discoveryErrors.set(connection.id, failedCheck(connection.id, error));
     if (!preferencesOnly) {
       try {
         client = this.client(connection);
@@ -514,14 +518,11 @@ export class CalendarService {
       for (const [index, source] of remaining) {
         if (checks[index]) continue;
         const health = await this.refreshSource(source, connection, client, range);
-        checks[index] = health;
         range.checks.set(source.id, { health, at: Date.now() });
       }
     };
     const limit = connection.provider === 'ticktick' ? 4 : 1;
     await Promise.all(Array.from({ length: Math.min(limit, sources.length) }, worker));
-    const error = range.discoveryErrors.get(connection.id);
-    return error ? [error, ...checks] : checks;
   }
 
   async refreshSource(source, connection, client, { start, end, zone, writtenItems }) {
@@ -535,20 +536,29 @@ export class CalendarService {
         const item = originalInboxItem(items);
         if (item) connection.tickTickInboxId = item._ticktick.projectId;
       }
-      const ids = new Set(items.map(item => item.id));
-      cache.items = cache.items.filter(item => preserved?.has(item.id) || !ids.has(item.id) && !overlaps(item, start, end)).concat(items);
+      const byId = new Map(items.map(item => [item.id, item]));
+      const visibilityIds = new Set();
+      for (const item of items) if (item.visibilityId) visibilityIds.add(item.visibilityId);
+      if (visibilityIds.size) {
+        for (const entry of this.data.hidden) {
+          if (entry.sourceId !== source.id || entry.visibilityId) continue;
+          const known = byId.get(entry.id);
+          if (known?.visibilityId) entry.visibilityId = known.visibilityId;
+        }
+      }
+      cache.items = cache.items.filter(item => preserved?.has(item.id) ||
+        !byId.has(item.id) && !visibilityIds.has(item.visibilityId) && !overlaps(item, start, end)).concat(items);
       this.notifications.observeTickTickItems(source, items);
       const checkedAt = new Date().toISOString();
       cache.checks = [{ start, end, zone, checkedAt }, ...cache.checks.filter(range => range.start !== start || range.end !== end)].slice(0, 30);
       return currentHealth(source, connection, checkedAt);
     } catch (error) {
       const checkedAt = rangeCheckedAt(cache.checks, start, end, zone);
-      return { connectionId: connection.id, sourceId: source.id, state: checkedAt ? 'stale' : 'error',
-        checkedAt, message: error.message };
+      return failedCheck(connection.id, error, source.id, checkedAt);
     }
   }
 
-  async state({ start, end, cachedOnly = false, preferencesOnly = false, refreshNotifications = false }, writtenItems) {
+  async state({ start, end, cachedOnly = false, preferencesOnly = false, refreshNotifications = false, macOnly = false }, writtenItems) {
     validateRange(start, end);
     if (cachedOnly === true) return this.cachedState(start, end);
     const legacy = this.data.connections.find(legacyMacGoogle);
@@ -569,10 +579,11 @@ export class CalendarService {
       this.lastRange = { start, end, zone, checks: new Map(), discoveryErrors: new Map(), visible: new Set() };
     }
     const range = this.lastRange;
-    const health = (await Promise.all(this.data.connections.map(connection =>
-      this.refreshConnection(connection, { ...range, writtenItems }, preferencesOnly === true)))).flat();
+    const connections = macOnly ? this.data.connections.filter(usesMacCalendars) : this.data.connections;
+    await Promise.all(connections.map(connection => this.refreshConnection(connection, { ...range, writtenItems }, preferencesOnly === true)));
+    const health = this.cachedHealth(start, end, zone);
     await this.notifications.refresh({ read: refreshNotifications ? 'all' : preferencesOnly ? 'none' : 'changed',
-      checkedRange: preferencesOnly ? undefined : { start, end, health }, writtenItems });
+      checkedRange: preferencesOnly ? undefined : { start, end, health }, writtenItems, macOnly });
     this.profile.save();
     range.visible = new Set(this.data.sources.filter(source => source.selected).map(source => source.id));
     return this.cachedState(start, end, health);
@@ -604,7 +615,7 @@ export class CalendarService {
     const selected = sources.filter(source => source.selected);
     const rangeCovered = selected.every(source => rangeCheckedAt(this.data.cache[source.id]?.checks ?? [], start, end, zone) !== null);
     const items = selected.flatMap(source => (this.data.cache[source.id]?.items ?? [])
-      .filter(item => !item.completed && !item.movedToSourceId && overlaps(item, start, end) && !this.data.hidden.some(h => matches(h, source.id, item.id)))
+      .filter(item => !item.completed && !item.movedToSourceId && overlaps(item, start, end) && !this.data.hidden.some(h => sameHiddenItem(h, source.id, item)))
       .map(item => publicItem(item, source)));
     const options = this.providers.connectionOptions ?? {};
     const googleBrowser = Boolean(options.googleBrowser || this.data.connections.some(c => c.provider === 'google' && c.route !== 'mac'));
@@ -620,23 +631,32 @@ export class CalendarService {
       ticktickCalendars: this.data.connections.flatMap(connection => this.tickTickCalendars.get(connection.id) ?? [])
         .map(calendar => this.withCalendarColor(calendar)),
       notificationPreferences: this.notifications.preferences(), notificationError: this.notifications.error,
+      notificationFailures: [...this.notifications.failures.values()],
       snapshotId: ++this.snapshotId, sources, items, rangeCovered, hidden: this.data.hidden,
       health: health ?? this.cachedHealth(start, end, zone),
       uncertain: this.data.journal.filter(entry => !this.activeWriteIds.has(entry.id))
     };
   }
 
-  hide({ sourceId, id }) {
+  hide(reference) {
+    const { sourceId } = reference;
     this.source(sourceId);
-    const item = this.cache(sourceId).items.find(entry => entry.id === id);
+    const item = this.cache(sourceId).items.find(entry => sameHiddenItem(reference, sourceId, entry));
     if (!item) throw new Error('Refresh the calendar and select the item again.');
-    if (!this.data.hidden.some(entry => matches(entry, sourceId, id))) this.data.hidden.push({ sourceId, id, title: item.title });
-    this.profile.save();
+    if (this.data.hidden.some(entry => sameHiddenItem(entry, sourceId, item))) return;
+    this.saveHidden([...this.data.hidden, { sourceId, id: item.id, title: item.title, ...(item.visibilityId && { visibilityId: item.visibilityId }) }]);
   }
 
-  restore({ sourceId, id }) {
-    this.data.hidden = this.data.hidden.filter(entry => !matches(entry, sourceId, id));
-    this.profile.save();
+  restore(reference) {
+    const next = this.data.hidden.filter(entry => !sameHiddenItem(entry, reference.sourceId, reference));
+    if (next.length !== this.data.hidden.length) this.saveHidden(next);
+  }
+
+  saveHidden(next) {
+    const previous = this.data.hidden;
+    this.data.hidden = next;
+    try { this.profile.save(); }
+    catch (error) { this.data.hidden = previous; throw error; }
   }
 
   async acknowledge({ id }) {

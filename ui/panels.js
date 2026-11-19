@@ -4,7 +4,8 @@ import { showMacAccountPicker, showRetainedCalendars } from './mac-account-picke
 import { createTickTickEditor } from './ticktick-editor.js';
 import { listCount, tickTickSections } from './ticktick-lists.js';
 import { appearanceSettings } from './appearance.js';
-import { syncIssues } from './sync-issues.js';
+import { macCalendarAccess, syncIssues } from './sync-issues.js';
+import { calendarAction } from './calendar-client.js';
 
 const dateFormat = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' };
 const asISO = value => new Date(value).toISOString();
@@ -157,6 +158,13 @@ export function createPanels(actions) {
     message.hidden = false;
   }
 
+  function macAccessWarning(access, retry) {
+    const owner = body;
+    const check = () => dialog.open && body === owner ? retry() : actions.refreshMacCalendars();
+    warning(access.message);
+    message.append(...actions.macAccessButtons(access, check, text => warning(text)));
+  }
+
   async function write(method, payload, success, failed) {
     const owner = dialog.open && body;
     if (owner && busy) return;
@@ -173,6 +181,9 @@ export function createPanels(actions) {
     } catch (error) {
       const text = errorText(error);
       if (!owner || !dialog.open || body !== owner) actions.report(text, { label: 'Refresh', action: actions.refresh });
+      else if (method === 'connect' && macCalendarAccess(error.code)) {
+        macAccessWarning(macCalendarAccess(error.code), () => write(method, { ...payload, requestAccess: false }, success, failed));
+      }
       else if (failed) failed(text);
       else warning(text);
     } finally {
@@ -198,7 +209,10 @@ export function createPanels(actions) {
     for (const { label, tickTick, entries } of accounts) {
       const section = element('section', 'sync-issue-account');
       section.append(element('h3', 'settings-subhead', label));
-      for (const [reason, affected] of Map.groupBy(entries, entry => entry.message || 'Could not refresh.')) {
+      for (const [reason, affected] of Map.groupBy(entries, entry => {
+        const reason = entry.message || 'Could not refresh.';
+        return entry.status && !reason.includes('HTTP ' + entry.status) ? reason + ' (HTTP ' + entry.status + ')' : reason;
+      })) {
         section.append(element('p', 'sync-issue-reason', reason));
         const list = element('ul', 'sync-issue-sources');
         for (const entry of affected) {
@@ -206,7 +220,7 @@ export function createPanels(actions) {
           const name = source ? [source.folder?.name, source.name].filter(Boolean).join(' / ') : tickTick ? 'TickTick list directory' : 'Calendar directory';
           const detail = entry.state === 'stale' && entry.checkedAt ? 'Last checked ' + localTime(entry.checkedAt) : 'Unavailable';
           const row = element('li');
-          row.append(element('span', '', name), element('span', 'help', detail));
+          row.append(element('span', '', name), element('span', 'help', entry.reminder ? 'Reminders · ' + detail : detail));
           list.append(row);
         }
         section.append(list);
@@ -222,7 +236,14 @@ export function createPanels(actions) {
     const focused = kind === 'settings' && document.activeElement.id;
     panel('settings', 'Calendars', { wide: true });
     const { connections, sources, ticktickCalendars, health } = state();
-    body.append(appearanceSettings(), element('h3', 'settings-subhead', 'Add an account'));
+    body.append(appearanceSettings());
+    const { macAccess } = syncIssues(state());
+    if (macAccess) {
+      const access = element('section', 'settings-calendar-access');
+      access.append(element('p', '', macAccess.message), ...actions.macAccessButtons(macAccess, actions.refreshMacCalendars, text => warning(text)));
+      body.append(access);
+    }
+    body.append(element('h3', 'settings-subhead', 'Add an account'));
     const options = element('div', 'provider-options');
     for (const { id, name, available } of state().connectionOptions?.integrations || []) {
       if (!available) continue;
@@ -291,7 +312,9 @@ export function createPanels(actions) {
           row.append(policy.row);
         }
         row.append(notificationSettingsButton(source));
-        if (status && status.state !== 'current' && status.message) row.append(element('p', 'source-error', status.message));
+        if (status && status.state !== 'current' && status.message && !macCalendarAccess(status.code)) {
+          row.append(element('p', 'source-error', status.message));
+        }
         group.append(row);
       }
       body.append(group);
@@ -553,7 +576,7 @@ export function createPanels(actions) {
         (values.connectionId ? 'Reconnected to ' : 'Connected to ') + providerName(values.provider));
     });
   }
-  async function chooseMacAccount(provider, connection, initialName = '') {
+  async function chooseMacAccount(provider, connection, initialName = '', requestAccess = true) {
     const google = provider === 'google';
     const brand = google ? 'Google' : 'Exchange';
     const name = connection ? null : optionalName(initialName);
@@ -562,19 +585,22 @@ export function createPanels(actions) {
     const target = body;
     body.append(element('p', 'help', 'Looking for accounts in Apple Calendar…'));
     footer.append(button('Back', back));
-    const retry = () => chooseMacAccount(provider, connection, name?.value);
+    const retry = () => chooseMacAccount(provider, connection, name?.value, false);
     const openAccounts = button('Open Internet Accounts', async () => {
-      try { await window.calendar.openInternetAccounts(); }
+      try { await calendarAction('openInternetAccounts'); }
       catch (error) { warning(errorText(error)); }
     }, 'text-button');
     let rows;
-    try { rows = await window.calendar.macAccountCalendars({ provider, ...(connection && { connectionId: connection.id }) }); }
+    try { rows = await calendarAction('macAccountCalendars', { provider, requestAccess, ...(connection && { connectionId: connection.id }) }); }
     catch (error) {
       if (body !== target || !dialog.open) return;
       body.replaceChildren();
-      if (error.code === 'PERMISSION') body.append(element('p', 'help', 'Allow Calendar Hub in System Settings under Privacy & Security → Calendars.'));
-      footer.append(button('Check again', retry));
-      warning(errorText(error));
+      const access = macCalendarAccess(error.code);
+      if (access) macAccessWarning(access, retry);
+      else {
+        footer.append(button('Check again', retry));
+        warning(errorText(error));
+      }
       return;
     }
     if (body !== target || !dialog.open) return;
@@ -982,7 +1008,7 @@ export function createPanels(actions) {
   }
 
   function hide(item) {
-    write('hide', { id: item.id, sourceId: item.sourceId }, owned => { if (owned) close(); actions.toast('Hidden in Calendar Hub'); });
+    write('hide', item, owned => { if (owned) close(); actions.toast('Hidden in Calendar Hub'); });
   }
   function complete(item) {
     if (completable(item, sourceOf(item))) write('complete', itemKey(item), owned => { if (owned) close(); actions.toast('Task completed in ' + brandName(sourceOf(item)?.provider)); });
@@ -995,7 +1021,7 @@ export function createPanels(actions) {
       const entry = element('div', 'review-entry');
       const info = element('div');
       info.append(element('strong', '', row.title), calendarContext(sourceOf(row), 'small'));
-      entry.append(info, button('Restore', () => write('restore', { id: row.id, sourceId: row.sourceId }, () => { hiddenItems(); actions.toast('Item restored'); })));
+      entry.append(info, button('Restore', () => write('restore', row, () => { hiddenItems(); actions.toast('Item restored'); })));
       body.append(entry);
     }
     footer.append(button('Done', close, 'primary'));

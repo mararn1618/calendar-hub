@@ -16,6 +16,8 @@ import { verifyNotificationJourneys } from './notification-journeys.mjs';
 import { verifyDragCreateJourneys } from './drag-create-journeys.mjs';
 import { verifyPendingEdits } from './pending-edit-journeys.mjs';
 import { verifyCalendarColors } from './calendar-color-journeys.mjs';
+import { verifyExchangeAllDayHiding } from './exchange-hide-journeys.mjs';
+import { verifyMacUsability } from './mac-usability-journeys.mjs';
 
 const project = fileURLToPath(new URL('../', import.meta.url));
 const started = new Date().toISOString(), run = started.replaceAll(/[:.]/g, '-');
@@ -224,6 +226,15 @@ async function verifyRemainingJourneys(page, helpers) {
   console.log('Independent Google and Exchange accounts in Apple Calendar');
   await verifyMacOnboarding({ temporary, evidence });
   report.passed.push('Two Mac Google and two read-only Exchange accounts, scoped edits, independent reminders, rename, restart and disconnect');
+  console.log('Hide and restore read-only Exchange all-day items');
+  await verifyExchangeAllDayHiding({ temporary, evidence });
+  report.passed.push('Hide individual Exchange all-day items locally, keep them hidden during refresh and restart, and restore them from Hidden items');
+  console.log('Mac Calendar access recovery and collapsible sidebar');
+  await verifyMacUsability({ temporary, evidence });
+  report.passed.push('Open Calendar Privacy Settings from a denied first connection and resume setup after granting access',
+    'One Calendar Privacy Settings action for multiple Mac calendar accounts, cached items, and recovery on returning to Calendar Hub',
+    'Request Mac Calendar access only after Allow Calendar Access, offer Settings after denial, and preserve independent TickTick errors until recovery',
+    'Collapse the sidebar by keyboard, keep New item, Manage calendars and Refresh reachable, and keep the layout after restart');
   console.log('Two Google and two TickTick browser accounts');
   await verifyBrowserAccounts({ temporary, evidence });
   report.passed.push('Browser sign-in to two Google and two TickTick accounts, with overlapping lists and calendars, separate writes, reconnect and restart');

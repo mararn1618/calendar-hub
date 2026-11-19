@@ -42,22 +42,23 @@ export async function createItem(page, { title, calendar, calendarValue, allDay 
 }
 
 export class DesktopDriver {
-  constructor({ evidenceDirectory, configPath } = {}) {
+  constructor({ evidenceDirectory, configPath, startupTimeout = 30_000 } = {}) {
     this.evidenceDirectory = evidenceDirectory;
     this.configPath = configPath;
+    this.startupTimeout = startupTimeout;
     this.errors = [];
   }
   async launch() {
     const args = this.configPath ? ['--calendar-test-config=' + this.configPath] : [];
     this.application = await electron.launch({
-      executablePath: join(appPath, 'Contents/MacOS/Calendar Central'), args, timeout: 30_000
+      executablePath: join(appPath, 'Contents/MacOS/Calendar Central'), args, timeout: this.startupTimeout
     });
-    this.page = await this.application.firstWindow();
+    this.page = await this.application.firstWindow({ timeout: this.startupTimeout });
     this.page.setDefaultTimeout(15_000);
     this.page.on('pageerror', error => this.errors.push(error.message));
-    await this.page.locator('#timeline').waitFor({ state: 'attached' });
+    await this.page.locator('#timeline').waitFor({ state: 'attached', timeout: this.startupTimeout });
     await until(async () => Number(await this.page.locator('#timeline').getAttribute('data-refresh-count')) > 0,
-      'The packaged calendar window did not load its first state.', 30_000);
+      'The packaged calendar window did not load its first state.', this.startupTimeout);
     return this.page;
   }
   async restart() {

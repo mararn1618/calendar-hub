@@ -7,8 +7,8 @@
   <key>CFBundleName</key>
   <string>Calendar Central</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
-  <string>Show events from Mac calendars you select in Calendar Central.</string>
+  <string>Show your selected calendars and save edits to the Google calendars you choose.</string>
   <key>NSCalendarsUsageDescription</key>
-  <string>Show events from Mac calendars you select in Calendar Central.</string>
+  <string>Show your selected calendars and save edits to the Google calendars you choose.</string>
 </dict>
 </plist>

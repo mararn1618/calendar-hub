@@ -205,7 +205,7 @@ function draftFields(draft, zone, original) {
 }
 
 export function createTickTick({
-  token, apiBase = 'https://api.ticktick.com/open/v1', fetchImpl = fetch,
+  token, expiresAt, apiBase = 'https://api.ticktick.com/open/v1', fetchImpl = fetch,
   timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
 }) {
   if (typeof token !== 'string' || !token.trim() || /[\r\n]/.test(token)) {
@@ -215,6 +215,9 @@ export function createTickTick({
   let inboxProjectId
 
   async function request(path, { method = 'GET', body, write = false } = {}) {
+    if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+      throw failure('TickTick sign-in expired. Choose Reconnect in Calendars.', 'AUTH_REQUIRED')
+    }
     let response
     try {
       response = await fetchImpl(base + path, {
@@ -236,10 +239,10 @@ export function createTickTick({
       if (write && (status >= 500 || status === 408)) {
         throw failure('TickTick did not confirm the change (HTTP ' + status + '). Check the original task.', 'UNCERTAIN', status)
       }
-      const message = status === 401 ? 'TickTick rejected the API token.' :
+      const message = status === 401 ? 'TickTick did not accept this sign-in. Reconnect in Calendars or use a personal API token.' :
         status === 403 ? 'TickTick denied access to this list or action.' :
         'TickTick returned HTTP ' + status + '.'
-      throw failure(message, 'PROVIDER_ERROR', status)
+      throw failure(message, status === 401 ? 'AUTH_REQUIRED' : 'PROVIDER_ERROR', status)
     }
     if (write && ![200, 201, 204].includes(response.status)) {
       await response.body?.cancel().catch(() => {})

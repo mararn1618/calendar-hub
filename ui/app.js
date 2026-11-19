@@ -287,7 +287,7 @@ function updateClock() {
     today = current;
     zone = currentZone;
     goTo(follow ? current : selectedDate);
-    void refresh();
+    void refresh(true);
   } else {
     planner.clock();
     if (woke && !document.hidden) void refresh();

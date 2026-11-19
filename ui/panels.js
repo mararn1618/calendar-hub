@@ -57,7 +57,10 @@ export function createPanels(actions) {
   let busy = false;
   const state = () => actions.state();
   const sourceOf = item => state().sources.find(source => source.id === item.sourceId);
+  const viaAppleCalendar = data => state().connections.some(connection => connection.id === sourceOf(data)?.connectionId && connection.route === 'mac');
   const latestItem = item => state().items.find(entry => entry.id === item.id && entry.sourceId === item.sourceId);
+  const hasPendingCreate = ({ sourceId, title }) => state().uncertain.some(row =>
+    row.kind === 'create' && row.sourceId === sourceId && row.title === title);
 
   function close() {
     if (dialog.open) dialog.close();
@@ -139,7 +142,10 @@ export function createPanels(actions) {
       const heading = element('div', 'connection-heading');
       const name = element('div', 'connection-name');
       name.append(providerMark(connection.provider), element('strong', '', connection.name || providers[connection.provider]));
-      heading.append(name, button('Disconnect', () => disconnect(connection), 'text-button subdued'));
+      heading.append(name);
+      if (connection.route === 'mac') heading.append(button('Choose calendars', chooseMacGoogleCalendars, 'text-button'));
+      if (connection.provider === 'ticktick') heading.append(button('Reconnect', () => connectionForm('ticktick', connection), 'text-button'));
+      heading.append(button('Disconnect', () => disconnect(connection), 'text-button subdued'));
       group.append(heading);
       const listed = sources.filter(source => source.connectionId === connection.id);
       if (!listed.length) group.append(element('p', 'help', 'No calendars are available from this connection yet.'));
@@ -166,6 +172,7 @@ export function createPanels(actions) {
     body.append(element('h3', 'settings-subhead', 'Add a connection'));
     const options = element('div', 'provider-options');
     for (const [provider, label] of Object.entries(providers)) {
+      if (provider === 'mac' && !state().connectionOptions?.macCalendars) continue;
       const connect = button('', () => connectionForm(provider), 'provider-button');
       const title = provider === 'mac' ? 'Connect Mac calendars' : 'Connect ' + label;
       connect.setAttribute('aria-label', title);
@@ -186,14 +193,94 @@ export function createPanels(actions) {
     body.append(element('p', '', 'Remove ' + (connection.name || providers[connection.provider]) + ' from Calendar Central? Its tasks and events stay with the provider.'));
     footer.append(button('Cancel', settings), button('Disconnect', () => write('disconnect', { connectionId: connection.id }, settings), 'destructive'));
   }
-  function connectionForm(provider) {
+  function connectionForm(provider, connection) {
     const name = providers[provider];
-    panel('connect', provider === 'mac' ? 'Connect Mac calendars' : 'Connect ' + name, { back: settings });
+    const title = connection ? 'Reconnect ' + name : 'Connect ' + name;
+    panel('connect', title, { back: settings });
+    footer.append(button('Back', settings));
+    if (provider === 'ticktick') {
+      const help = connection ? 'Sign in with the same TickTick account to keep your calendar selections for ' + connection.name + '.' :
+        'Sign in at TickTick and allow Calendar Central to read and update your tasks.';
+      body.append(element('p', 'help', help),
+        button('Use a personal token', () => advancedConnection(provider, connection), 'text-button'));
+      footer.append(button('Continue with TickTick', () => finishConnection({ provider, connectionId: connection?.id }), 'primary'));
+    } else if (provider === 'mac') {
+      body.append(element('p', 'help', 'Show meetings from Apple Calendar as read-only. Allow Calendar Central to read your calendars when macOS asks.'));
+      footer.append(button('Choose Mac calendars', () => finishConnection({ provider }), 'primary'));
+    } else {
+      const { googleBrowser, macCalendars, googleConfigError } = state().connectionOptions || {};
+      if (googleBrowser) {
+        body.append(element('p', 'help', 'Sign in at Google and choose the calendars to show here.'));
+        footer.append(button('Continue with Google', () => finishConnection({ provider }), 'primary'));
+        if (macCalendars) body.append(button('Use Google from Apple Calendar', chooseMacGoogleCalendars, 'text-button'));
+      } else if (macCalendars) {
+        body.append(element('p', 'help', 'Use the Google account in Apple Calendar. You can add a Google account in Mac System Settings.'));
+        footer.append(button('Choose Google calendars on this Mac', chooseMacGoogleCalendars, 'primary'));
+      }
+      body.append(button('Use your own Google desktop client', () => advancedConnection(provider), 'text-button'));
+      if (googleConfigError && !googleBrowser) warning(googleConfigError);
+    }
+  }
+  function finishConnection(values) {
+    write('connect', values, () => {
+      settings();
+      actions.toast((values.connectionId ? 'Reconnected to ' : 'Connected to ') + providers[values.provider]);
+    });
+  }
+  async function chooseMacGoogleCalendars() {
+    const back = () => connectionForm('google');
+    panel('mac-google', 'Choose Google calendars', { back });
+    const target = body;
+    body.append(element('p', 'help', 'Looking for accounts in Apple Calendar…'));
+    footer.append(button('Back', back));
+    const openAccounts = button('Open Internet Accounts', async () => {
+      try { await window.calendar.openInternetAccounts(); }
+      catch (error) { warning(errorText(error)); }
+    }, 'text-button');
+    let options;
+    try { options = await window.calendar.macGoogleCalendars(); }
+    catch (error) {
+      if (body !== target || !dialog.open) return;
+      body.replaceChildren();
+      if (error.code === 'PERMISSION') body.append(element('p', 'help', 'Allow Calendar Central in System Settings under Privacy & Security → Calendars.'));
+      footer.append(button('Check again', chooseMacGoogleCalendars));
+      warning(errorText(error));
+      return;
+    }
+    if (body !== target || !dialog.open) return;
+    if (!options.length) {
+      body.replaceChildren(element('p', 'help', 'Add Google in System Settings → Internet Accounts, turn on Calendars, then check again.'), openAccounts);
+      footer.append(button('Check again', chooseMacGoogleCalendars, 'primary'));
+      return;
+    }
+    body.replaceChildren(element('p', 'help', 'Choose the calendars under your Google account. If Google is missing, add it in Internet Accounts and turn on Calendars. Apple Calendar syncs your changes to Google.'));
+    const selected = new Set(options.filter(option => option.chosen).map(option => option.id));
+    const connect = button('Use selected calendars', () => finishConnection({ provider: 'google', route: 'mac', googleCalendarIds: [...selected] }), 'primary');
+    connect.disabled = !selected.size;
+    for (const option of options) {
+      const label = [option.accountName, option.name].filter(Boolean).join(' · ') + (option.writable ? '' : ' (read-only)');
+      const choice = check(label, selected.has(option.id));
+      choice.control.addEventListener('change', () => {
+        if (choice.control.checked) selected.add(option.id);
+        else selected.delete(option.id);
+        connect.disabled = !selected.size;
+      });
+      body.append(choice.row);
+    }
+    body.append(openAccounts, button('Check again', chooseMacGoogleCalendars, 'text-button'));
+    footer.append(connect);
+  }
+  function advancedConnection(provider, connection) {
+    const name = providers[provider];
+    const back = () => connectionForm(provider, connection);
+    panel('connect-advanced', provider === 'ticktick' ? 'Use a TickTick token' : 'Use a Google desktop client', { back });
     const form = element('form', 'editor-form');
     form.id = 'connect-form';
-    const connectionName = input('text', 'connection-name');
-    connectionName.placeholder = name;
-    form.append(field('Connection name (optional)', connectionName));
+    const connectionName = connection ? null : input('text', 'connection-name');
+    if (connectionName) {
+      connectionName.placeholder = name;
+      form.append(field('Connection name (optional)', connectionName));
+    }
     let token, clientId, secret;
     if (provider === 'ticktick') {
       token = input('password', 'access-token');
@@ -227,23 +314,21 @@ export function createPanels(actions) {
       form.append(element('p', 'help', 'In Google Cloud, enable the Google Calendar API and create an OAuth client of type Desktop app. Choose its downloaded JSON file or enter its details below.'),
         field('Desktop credentials JSON', file), field('Client ID', clientId), field('Client secret (optional)', secret),
         element('p', 'help', 'Google opens in your browser to finish sign-in.'));
-    } else {
-      form.append(element('p', 'help', 'Calendar Central reads calendars available in Apple Calendar on this Mac. Allow access when macOS asks.'));
     }
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (!form.reportValidity()) return;
-      const values = { provider, name: connectionName.value.trim() || undefined };
+      const values = { provider, route: provider === 'ticktick' ? 'token' : 'browser', name: connectionName?.value.trim() || undefined, connectionId: connection?.id };
       if (token) values.token = token.value.trim();
       if (clientId) values.clientId = clientId.value.trim();
       if (secret?.value) values.clientSecret = secret.value.trim();
-      write('connect', values, () => { settings(); actions.toast('Connected to ' + name); });
+      finishConnection(values);
     });
     body.append(form);
-    const submit = element('button', 'primary', 'Connect');
+    const submit = element('button', 'primary', connection ? 'Reconnect' : 'Connect');
     submit.type = 'submit';
     submit.setAttribute('form', form.id);
-    footer.append(button('Back', settings), submit);
+    footer.append(button('Back', back), submit);
     (token || clientId || connectionName).focus();
   }
 
@@ -400,7 +485,7 @@ export function createPanels(actions) {
         const isPoint = item && !item.allDay && Date.parse(item.end) === Date.parse(item.start);
         if (all ? end <= start : (Date.parse(end) < Date.parse(start) || (!isPoint && Date.parse(end) === Date.parse(start)))) throw new Error('End must be after start.');
         const data = { ...(item ? itemKey(item) : {}), title: name, sourceId: destination.value, start, end, allDay: all };
-        if (!item && state().uncertain.some(row => row.sourceId === data.sourceId && row.title === name)) return uncertainItems();
+        if (!item && hasPendingCreate(data)) return uncertainItems();
         if (item && name === item.title && all === item.allDay && start === item.start && end === item.end) return close();
         save(item, data);
       } catch (error) { warning(errorText(error)); }
@@ -435,8 +520,8 @@ export function createPanels(actions) {
     submitSave(item, data);
   }
   function submitSave(item, data) {
-    write('save', data, () => { close(); actions.toast(item ? 'Changes saved' : 'Item created'); }, text => {
-      if (!item && state().uncertain.some(row => row.sourceId === data.sourceId && row.title === data.title)) {
+    write('save', data, () => { close(); actions.toast(viaAppleCalendar(data) ? 'Saved in Apple Calendar for sync to Google' : item ? 'Changes saved' : 'Item created'); }, text => {
+      if (!item && hasPendingCreate(data)) {
         uncertainItems();
         return;
       }
@@ -465,7 +550,9 @@ export function createPanels(actions) {
     const checks = [];
     if (item.hasAttendees) {
       const guests = check('Notify guests');
-      body.append(guests.row, element('p', 'help check-help', remove ? 'Google will send a cancellation to guests.' : 'Google will send the updated event to guests.'));
+      const guestMessage = viaAppleCalendar(item) ? 'Apple Calendar and Google handle delivery to guests when they sync.' :
+        remove ? 'Google will send a cancellation to guests.' : 'Google will send the updated event to guests.';
+      body.append(guests.row, element('p', 'help check-help', guestMessage));
       checks.push(guests.control);
     }
     if (item.recurring) {
@@ -476,7 +563,7 @@ export function createPanels(actions) {
     const confirm = button(remove ? 'Delete from Google' : 'Save changes', () => {
       if (checks.some(control => !control.checked)) return;
       const payload = { ...data, notify: Boolean(item.hasAttendees), occurrence: Boolean(item.recurring) };
-      if (remove) write('remove', payload, () => { close(); actions.toast('Deleted from Google'); });
+      if (remove) write('remove', payload, () => { close(); actions.toast(viaAppleCalendar(item) ? 'Deleted in Apple Calendar for sync to Google' : 'Deleted from Google'); });
       else submitSave(item, payload);
     }, remove ? 'destructive' : 'primary');
     const evaluate = () => { confirm.disabled = checks.some(control => !control.checked); };

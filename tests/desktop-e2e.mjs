@@ -9,6 +9,7 @@ import { appPath, createItem, DesktopDriver, refresh, until } from './desktop-dr
 import { startProviderServer } from './provider-server.mjs';
 import { verifyTickTickJourneys } from './ticktick-journeys.mjs';
 import { verifyGoogleJourneys } from './google-journeys.mjs';
+import { verifyMacOnboarding } from './mac-onboarding-e2e.mjs';
 
 const project = fileURLToPath(new URL('../', import.meta.url));
 const started = new Date().toISOString(), run = started.replaceAll(/[:.]/g, '-');
@@ -23,7 +24,7 @@ const report = {
   started, app: appPath, applicationSha256: createHash('sha256').update(await readFile(join(appPath, 'Contents/Resources/app.asar'))).digest('hex'),
   os: execFileSync('sw_vers', ['-productVersion'], { encoding: 'utf8' }).trim(),
   arch: process.arch, zone: Intl.DateTimeFormat().resolvedOptions().timeZone, day: provider.day,
-  boundary: 'Packaged Mac app, production adapters, independent loopback TickTick and Google HTTP services, simulated Google consent, isolated profile',
+  boundary: 'Packaged Mac app, production adapters, independent loopback TickTick and Google HTTP services, simulated browser consent for both providers, isolated profiles',
   passed: [], status: 'running'
 };
 
@@ -36,14 +37,16 @@ async function onboard(page) {
   await page.getByRole('button', { name: 'Manage calendars', exact: true }).first().click();
   const dialog = page.locator('dialog[open]');
   await dialog.getByRole('button', { name: 'Connect TickTick', exact: true }).click();
-  await dialog.getByLabel('Access token').fill('fixture-tick-token');
-  await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+  assert.equal(await dialog.getByLabel('Access token').count(), 0);
+  const tickOAuth = driver.application.waitForEvent('window');
+  await dialog.getByRole('button', { name: 'Continue with TickTick', exact: true }).click();
+  const tickConsent = await tickOAuth;
+  await tickConsent.getByRole('button', { name: 'Authorize test tasks' }).click();
   await dialog.getByRole('checkbox', { name: 'Planning tasks', exact: true }).waitFor();
   await dialog.getByRole('button', { name: 'Connect Google', exact: true }).click();
-  await dialog.getByLabel('Client ID', { exact: true }).fill('fixture.apps.googleusercontent.com');
-  await dialog.getByLabel('Client secret (optional)').fill('fixture-secret');
+  assert.equal(await dialog.getByLabel('Client ID', { exact: true }).count(), 0);
   const oauth = driver.application.waitForEvent('window');
-  await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Continue with Google', exact: true }).click();
   const consent = await oauth;
   await consent.getByRole('button', { name: 'Authorize test calendars' }).click();
   const selected = dialog.getByRole('checkbox', { name: 'Studio', exact: true });
@@ -55,6 +58,16 @@ async function onboard(page) {
     await until(async () => (await control.isChecked()) && await dialog.getByRole('button', { name: 'Done', exact: true }).isEnabled(), 'Source settings did not save.');
   }
   assert.equal(await dialog.getByRole('checkbox', { name: 'TickTick copies', exact: true }).isChecked(), false);
+  const planning = dialog.getByRole('checkbox', { name: 'Planning tasks', exact: true });
+  const planningId = await planning.getAttribute('data-source-id');
+  await dialog.getByRole('button', { name: 'Reconnect', exact: true }).click();
+  const reauth = driver.application.waitForEvent('window');
+  await dialog.getByRole('button', { name: 'Continue with TickTick', exact: true }).click();
+  await (await reauth).getByRole('button', { name: 'Authorize test tasks' }).click();
+  await planning.waitFor();
+  assert.equal(await planning.count(), 1);
+  assert.equal(await planning.isChecked(), true);
+  assert.equal(await planning.getAttribute('data-source-id'), planningId);
   await dialog.getByRole('button', { name: 'Done', exact: true }).click();
   await refresh(page);
   await page.getByRole('button', { name: 'Review the launch plan', exact: true }).waitFor();
@@ -129,6 +142,10 @@ try {
   page = await verifyGoogleJourneys({ ...helpers, page });
   report.passed.push('Google edits, guest review, occurrence and conflict', 'Hide, restore, read-only source, confirmed deletion', 'Stale cache and independent source recovery');
   assert.deepEqual(driver.errors, [], 'Unexpected renderer errors');
+  await driver.close();
+  console.log('Select Google accounts in Apple Calendar');
+  await verifyMacOnboarding({ temporary, evidence });
+  report.passed.push('Google through Apple Calendar: permission, explicit calendar selection, original edits and restart in a simulated Mac calendar store');
   report.status = 'passed';
 } catch (error) {
   report.status = 'failed'; report.error = error.message;

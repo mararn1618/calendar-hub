@@ -38,7 +38,8 @@ export async function startProviderServer() {
   addEvent('tick-copy', 'tickcopy', 'Review the launch plan', stamp(day, 9), stamp(day, 9, 30));
   const controls = { unavailable: new Set(), noTickId: false, requests: [] };
   const authorizations = new Map();
-  let origin;
+  const publicClients = new Map();
+  let origin, currentTickToken;
 
   const server = createServer(async (request, response) => {
     const u = new URL(request.url, origin), method = request.method;
@@ -50,12 +51,25 @@ export async function startProviderServer() {
       response.end(body === undefined ? undefined : JSON.stringify(body));
     };
     try {
-      if (u.pathname === '/oauth/authorize') {
-        if (!u.searchParams.get('state') || !u.searchParams.get('code_challenge')) return json(400, { error: 'missing OAuth state or PKCE' });
+      const isTickSignIn = u.pathname.startsWith('/tick/oauth/');
+      const oauthPath = isTickSignIn ? u.pathname.slice(5) : u.pathname;
+      if (isTickSignIn && oauthPath === '/oauth/register' && method === 'POST') {
+        const registration = JSON.parse(contents);
+        if (registration.token_endpoint_auth_method !== 'none' || registration.client_name !== 'Calendar Central' ||
+            registration.redirect_uris?.length !== 1) return json(400, { error: 'invalid_client_metadata' });
         const id = randomUUID();
-        authorizations.set(id, Object.fromEntries(u.searchParams));
+        publicClients.set(id, registration.redirect_uris[0]);
+        return json(201, { ...registration, client_id: id });
+      }
+      if (oauthPath === '/oauth/authorize') {
+        const clientId = u.searchParams.get('client_id');
+        if (isTickSignIn ? publicClients.get(clientId) !== u.searchParams.get('redirect_uri') : clientId !== 'fixture.apps.googleusercontent.com') return json(400);
+        if (!u.searchParams.get('state') || !u.searchParams.get('code_challenge') || u.searchParams.get('code_challenge_method') !== 'S256') return json(400, { error: 'missing OAuth state or PKCE' });
+        const id = randomUUID();
+        authorizations.set(id, { ...Object.fromEntries(u.searchParams), ticktick: isTickSignIn });
         response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-        return response.end('<title>Test calendar consent</title><form method="post" action="/oauth/consent"><input type="hidden" name="id" value="' + id + '"><button>Authorize test calendars</button></form>');
+        return response.end('<title>Test consent</title><form method="post" action="/oauth/consent"><input type="hidden" name="id" value="' + id + '"><button>' +
+          (isTickSignIn ? 'Authorize test tasks' : 'Authorize test calendars') + '</button></form>');
       }
       if (u.pathname === '/oauth/consent' && method === 'POST') {
         const id = new URLSearchParams(contents).get('id'), auth = authorizations.get(id);
@@ -64,11 +78,18 @@ export async function startProviderServer() {
         callback.searchParams.set('code', id); callback.searchParams.set('state', auth.state);
         response.writeHead(302, { location: callback.href }); return response.end();
       }
-      if (u.pathname === '/oauth/token') {
+      if (oauthPath === '/oauth/token') {
         const form = new URLSearchParams(contents);
         if (form.get('grant_type') === 'authorization_code') {
           const auth = authorizations.get(form.get('code'));
-          if (!auth || createHash('sha256').update(form.get('code_verifier') || '').digest('base64url') !== auth.code_challenge) return json(400, { error: 'invalid_grant' });
+          if (!auth || auth.ticktick !== isTickSignIn || form.get('client_id') !== auth.client_id || form.get('redirect_uri') !== auth.redirect_uri ||
+              createHash('sha256').update(form.get('code_verifier') || '').digest('base64url') !== auth.code_challenge) return json(400, { error: 'invalid_grant' });
+          authorizations.delete(form.get('code'));
+          if (isTickSignIn) {
+            if (form.has('client_secret') || form.get('scope') !== 'tasks:write tasks:read') return json(400, { error: 'invalid_request' });
+            currentTickToken = 'fixture-tick-token-' + randomUUID();
+            return json(200, { access_token: currentTickToken, token_type: 'bearer', expires_in: 3600, scope: auth.scope });
+          }
           return json(200, { access_token: 'fixture-google-access', refresh_token: 'fixture-google-refresh', token_type: 'Bearer', expires_in: 3600, scope: auth.scope });
         }
         return form.get('refresh_token') === 'fixture-google-refresh' ? json(200, { access_token: 'fixture-google-access', expires_in: 3600, token_type: 'Bearer' }) : json(401);
@@ -77,8 +98,8 @@ export async function startProviderServer() {
       const prefix = isGoogle ? '/google/calendar/v3' : '/tick/open/v1';
       if (!u.pathname.startsWith(prefix + '/')) return json(404);
       const parts = u.pathname.slice(prefix.length + 1).split('/').map(decodeURIComponent);
-      const expected = isGoogle ? 'fixture-google-access' : 'fixture-tick-token';
-      if (request.headers.authorization !== 'Bearer ' + expected) return json(401, { error: { message: 'Invalid test credential.' } });
+      const expected = isGoogle ? 'fixture-google-access' : currentTickToken;
+      if (!expected || request.headers.authorization !== 'Bearer ' + expected) return json(401, { error: { message: 'Invalid test credential.' } });
       const body = contents ? JSON.parse(contents) : {};
       controls.requests.push({ provider: isGoogle ? 'google' : 'ticktick', method, path: parts.join('/'), query: Object.fromEntries(u.searchParams) });
       if (isGoogle) {

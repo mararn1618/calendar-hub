@@ -241,3 +241,10 @@ test('does not confirm completion from a missing task or silently accept lost ch
   sent = false
   await assert.rejects(client.update(source, item, { ...day, allDay: true }), { code: 'UNCERTAIN' })
 })
+
+test('an expired or rejected grant asks for sign-in before another task change', async () => {
+  const expired = createTickTick({ token: 'old', expiresAt: Date.now() - 1000, fetchImpl: () => assert.fail('Used an expired grant') })
+  await assert.rejects(expired.sources(), { code: 'AUTH_REQUIRED' })
+  const rejected = createTickTick({ token: 'revoked', fetchImpl: async () => new Response(null, { status: 401 }) })
+  await assert.rejects(rejected.sources(), { code: 'AUTH_REQUIRED', status: 401 })
+})

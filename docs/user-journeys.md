@@ -14,6 +14,8 @@ Each journey starts in the Mac app. Check provider changes independently of the 
 
 ## First-release defaults
 
+In **Connect TickTick**, approve task access in the system browser. In **Connect Google**, choose Google calendars from macOS Internet Accounts, or use browser consent when the publisher has configured a Google desktop client. Both routes start without asking the user to supply developer credentials.
+
 Use the Mac's local time zone. Open on today. A full week begins on Monday. Next X Days uses consecutive dates and an adjustable count. Use 15-minute increments for pointer edits and a 30-minute initial slot when giving an untimed task a time. Keep source selection, local hiding and connection credentials in the app's own profile.
 
 For uncertain TickTick recurrence behavior, show recurring tasks and explain any editing limitation before a change. For BMW, the initial contract is read-only. Direct Exchange mailbox access and organizer edits remain on the [roadmap](../.scratch/first-mac-release/spec.md).

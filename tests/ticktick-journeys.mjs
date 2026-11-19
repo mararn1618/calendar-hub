@@ -45,6 +45,9 @@ export async function verifyTickTickJourneys({ page, provider, dragTo, restart, 
     await selectItem(date, 'timed-item').and(page.locator('[aria-description*="' + start + '"][aria-description*="' + end + '"]')).waitFor()
   }
 
+  await page.getByRole('button', { name: 'Day', exact: true }).click()
+  await page.getByRole('button', { name: 'Today', exact: true }).click()
+  await refresh(page)
   await selectItem(day, 'all-day-item').waitFor()
   assert.equal(baseline.isAllDay, true)
   await dragTo({ itemId: 'review', day, hour: 10 })

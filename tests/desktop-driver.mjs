@@ -103,11 +103,15 @@ export class DesktopDriver {
         return bounds.y > bounds.header.y + bounds.header.height + 26 && bounds.y < bounds.area.y + bounds.area.height - 30;
       }, 'The target hour could not be scrolled into view.');
     }
+    if (isAllDay) await block.hover();
+    bounds = await measure();
     const handle = edge ? await block.locator('[data-edge="' + edge + '"]').boundingBox() : null;
     const { origin, target, y, grip } = bounds;
     assert(!edge || handle, 'Resize handle must exist for this source.');
     const sourceX = handle ? handle.x + handle.width / 2 : origin.x + origin.width / 2;
     const sourceY = handle ? handle.y + handle.height / 2 : origin.y + grip;
+    assert(await block.evaluate((node, point) => node.contains(document.elementFromPoint(point.x, point.y)), { x: sourceX, y: sourceY }),
+      'The drag must start on the requested item.');
     await page.mouse.move(sourceX, sourceY);
     await page.mouse.down();
     await page.mouse.move(target.x + target.width * 0.53, y + 0.5, { steps: 12 });

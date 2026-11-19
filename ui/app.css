@@ -64,6 +64,10 @@ button.destructive:hover { background: #8a2b30; }
 .i-lock { width: 13px; height: 14px; color: #74828a; }
 .i-lock::before { width: 7px; height: 6px; border: 1.2px solid currentColor; border-radius: 2px; bottom: 1px; left: 2px; }
 .i-lock::after { width: 4px; height: 4px; border: 1.2px solid currentColor; border-bottom: 0; border-radius: 4px 4px 0 0; top: 2px; left: 3.5px; }
+.i-bell { background: linear-gradient(currentColor,currentColor) center 11px / 12px 1.4px no-repeat; }
+.i-bell::before { left: 3.5px; top: 2px; width: 7px; height: 8px; border: 1.35px solid currentColor; border-bottom: 0; border-radius: 6px 6px 1px 1px; }
+.i-bell::after { left: 6px; top: 13px; width: 4px; height: 1.5px; border-radius: 0 0 2px 2px; background: currentColor; }
+.i-bell > i { position: absolute; left: 0; top: 7px; width: 16px; height: 1.4px; border-radius: 2px; background: currentColor; box-shadow: 0 -1px var(--sidebar); transform: rotate(48deg); }
 .icon-button { width: 28px; height: 28px; min-height: 0; padding: 0; border-color: transparent; background: transparent; color: #596972; }
 .icon-button:hover { color: var(--ink); background: #233e4610; }
 .text-button { background: transparent; border: 0; padding: 3px 4px; color: var(--accent); }
@@ -100,9 +104,12 @@ button.destructive:hover { background: #8a2b30; }
 #source-list { overflow-y: auto; min-height: 0; padding: 0 1px; }
 .sidebar-group { padding-bottom: 13px; }
 .sidebar-group h3 { margin: 8px 4px 5px; color: var(--muted); font-size: 11px; font-weight: 570; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sidebar-calendar-heading { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
-.sidebar-calendar-heading > .source-toggle { flex: 1; }
-.sidebar-calendar-heading .icon-button { flex: none; }
+.sidebar-calendar-heading, .sidebar-calendar-row { display: flex; align-items: center; justify-content: space-between; gap: 3px; }
+.sidebar-calendar-row > .source-toggle { flex: 1; }
+.sidebar-calendar-heading .icon-button, .sidebar-calendar-row .icon-button { flex: none; }
+.notification-bell { width: 26px; height: 26px; }
+.notification-bell[aria-pressed=true] { color: var(--accent-dark); background: var(--accent-tint); }
+.notification-bell[aria-busy=true] { cursor: progress; opacity: .6; }
 .source-toggle { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 28px; padding: 3px 5px; border-radius: 5px; }
 .source-toggle:hover { background: #233c4210; }
 .source-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -251,6 +258,8 @@ dialog::backdrop { background: #24343c38; }
 .settings-source .source-toggle:hover { background: none; }
 .settings-source .i-lock { margin-left: 0; }
 .settings-source .readonly-control { gap: 6px; font-size: 11px; color: var(--muted); }
+.notification-settings { gap: 5px; padding: 2px 5px; min-height: 26px; font-size: 11px; font-weight: 500; color: var(--accent-dark); background: #f6f9f9; border: 1px solid var(--line); }
+.notification-settings .i-bell { transform: scale(.86); }
 .settings-list-filter { display: flex; align-items: center; justify-content: space-between; padding: 3px 10px; border-top: 1px solid #edf0f1; }
 .settings-list-filter .text-button { font-size: 12px; }
 .source-error { flex: 0 0 100%; font-size: 11px; color: #855a25; }
@@ -340,6 +349,9 @@ dialog::backdrop { background: #24343c38; }
 .more-actions button, #context-menu button { justify-content: flex-start; border: 0; border-radius: 4px; background: transparent; padding: 5px 8px; font-size: 12px; }
 .more-actions button:hover, #context-menu button:hover, #context-menu button:focus-visible { background: var(--accent-tint); outline: none; }
 #context-menu { position: fixed; z-index: 15; display: grid; padding: 4px; min-width: 185px; background: #fff; border: 1px solid #cbd6d9; border-radius: 8px; box-shadow: 0 4px 19px #203b4329; }
+#context-menu [role=menuitemradio]::before { content: ''; width: 10px; color: var(--accent); }
+#context-menu [role=menuitemradio][aria-checked=true]::before { content: '✓'; }
+#context-menu [role=menuitemradio] + [role=menuitem] { margin-top: 3px; border-top: 1px solid var(--line); border-radius: 0 0 4px 4px; }
 #toast { position: fixed; bottom: 47px; left: calc(50% + 90px); transform: translateX(-50%); z-index: 10; padding: 8px 15px; border-radius: 7px; color: #fff; background: #2c434c; font-size: 12px; box-shadow: 0 3px 10px #12303a21; pointer-events: none; }
 @media (max-width: 1050px) {
   .workspace { grid-template-columns: 210px minmax(0,1fr); }

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { CalendarNotifications } from './calendar-notifications.mjs';
 import { applyTickTickCalendars, configureTickTickSettings, isTickTickInbox, listMetadata, orderedTickTickSources,
   publicTickTickSettings, retainTickTickFolders, tickTickSettings } from './ticktick-calendars.mjs';
 
@@ -68,6 +69,7 @@ export class CalendarService {
     this.providers = providers;
     this.clients = new Map();
     this.tickTickCalendars = new Map();
+    this.notifications = new CalendarNotifications(this, providers.notificationCenter);
     this.queue = Promise.resolve();
     let migrated = false;
     for (const connection of this.data.connections.filter(entry => entry.provider === 'ticktick')) {
@@ -87,12 +89,14 @@ export class CalendarService {
       const { start, end } = input;
       const zone = currentTimeZone();
       const preferencesOnly = input.preferencesOnly === true;
+      const refreshNotifications = input.refreshNotifications === true;
       const pending = this.pendingState;
-      if (pending && pending.start === start && pending.end === end && pending.zone === zone && pending.preferencesOnly === preferencesOnly) {
+      if (pending && pending.start === start && pending.end === end && pending.zone === zone &&
+          pending.preferencesOnly === preferencesOnly && pending.refreshNotifications === refreshNotifications) {
         return pending.result;
       }
       const result = this.enqueue(() => this.state(input));
-      this.pendingState = { start, end, zone, preferencesOnly, result };
+      this.pendingState = { start, end, zone, preferencesOnly, refreshNotifications, result };
       const clear = () => { if (this.pendingState?.result === result) this.pendingState = null; };
       result.then(clear, clear);
       return result;
@@ -251,6 +255,7 @@ export class CalendarService {
       }
     }
     this.profile.save();
+    return this.notifications.refresh({ read: 'changed' });
   }
 
   disconnect({ connectionId }) {
@@ -267,7 +272,9 @@ export class CalendarService {
     }
     this.clients.delete(connectionId);
     this.tickTickCalendars.delete(connectionId);
+    this.notifications.removePreferences(belongs);
     this.profile.save();
+    return this.notifications.refresh({ read: 'none' });
   }
 
   setSource({ sourceId, selected, readOnly }) {
@@ -290,15 +297,26 @@ export class CalendarService {
       source.readOnly = !source.writable || readOnly;
     }
     this.profile.save();
+    if (source.provider === 'ticktick' && typeof selected === 'boolean') return this.notifications.refresh({ read: 'changed' });
   }
 
   configureTickTick(input) {
     const connection = this.tickTickConnection('ticktick', input.connectionId);
     const sources = this.connectionSources(connection.id);
     connection.ticktick = configureTickTickSettings(connection.ticktick, input, sources.map(source => source.id), this.data.unavailableSourceSettings);
+    if (input.groups !== undefined) {
+      this.notifications.removePreferences(id => {
+        const [account, kind, groupId] = JSON.parse(id);
+        return account === connection.id && kind === 'custom' && !connection.ticktick.groups.some(group => group.id === groupId);
+      });
+    }
     this.applyTickTickSettings(connection);
     this.profile.save();
+    return this.notifications.refresh({ read: 'changed' });
   }
+
+  setCalendarNotifications(input) { return this.notifications.set(input); }
+  refreshNotifications() { return this.notifications.refresh({ discover: true }); }
 
   setTickTickCalendarVisible({ connectionId, calendarId, visible }) {
     const connection = this.tickTickConnection('ticktick', connectionId);
@@ -377,6 +395,7 @@ export class CalendarService {
       const items = await client.items(source.remote, start, end);
       const ids = new Set(items.map(item => item.id));
       cache.items = cache.items.filter(item => !ids.has(item.id) && !overlaps(item, start, end)).concat(items);
+      this.notifications.observeTickTickItems(source, items);
       const checkedAt = new Date().toISOString();
       cache.checks = [{ start, end, zone, checkedAt }, ...cache.checks.filter(range => range.start !== start || range.end !== end)].slice(0, 30);
       return currentHealth(source, connection, checkedAt);
@@ -387,7 +406,7 @@ export class CalendarService {
     }
   }
 
-  async state({ start, end, preferencesOnly = false }) {
+  async state({ start, end, preferencesOnly = false, refreshNotifications = false }) {
     validateRange(start, end);
     const zone = currentTimeZone();
     if (this.lastRange?.start !== start || this.lastRange.end !== end || this.lastRange.zone !== zone) {
@@ -396,6 +415,8 @@ export class CalendarService {
     const range = this.lastRange;
     const health = (await Promise.all(this.data.connections.map(connection =>
       this.refreshConnection(connection, range, preferencesOnly === true)))).flat();
+    await this.notifications.refresh({ read: refreshNotifications ? 'all' : preferencesOnly ? 'none' : 'changed',
+      checkedRange: preferencesOnly ? undefined : { start, end, health } });
     this.profile.save();
     const sources = this.data.sources.map(({ remote, remoteId, localReadOnly, ...source }) =>
       source.provider === 'ticktick' ? { ...source, ...listMetadata(remote) } : source);
@@ -409,6 +430,7 @@ export class CalendarService {
       connections: this.data.connections.map(({ id, provider, name, route, ticktick }) =>
         ({ id, provider, name, route, ...(ticktick && { ticktick: publicTickTickSettings(ticktick) }) })),
       ticktickCalendars: this.data.connections.flatMap(connection => this.tickTickCalendars.get(connection.id) ?? []),
+      notificationPreferences: this.notifications.preferences(), notificationError: this.notifications.error,
       sources, items, hidden: this.data.hidden, health, uncertain: this.data.journal
     };
   }
@@ -474,7 +496,9 @@ export class CalendarService {
     }
     cache.items = cache.items.filter(item => item.id !== (original?.id ?? result?.id));
     if ((action === 'create' || action === 'update') && result?.id) cache.items.push(result);
+    if (result?.id || original) this.notifications.observeTickTickItems(source, [result ?? original]);
     this.data.journal = this.data.journal.filter(entry => entry.id !== record.id);
     this.profile.save();
+    await this.notifications.refresh({ read: 'none' });
   }
 }

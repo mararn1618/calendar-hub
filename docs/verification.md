@@ -35,3 +35,9 @@ Version 0.2.0 passed all eight user journeys on Apple Silicon with macOS 27.0.1.
 All 57 unit tests passed. A 54-list fixture checked that switching a recently loaded calendar off and on makes no provider requests. An explicit refresh still checks every visible list. Migration checks covered earlier list selections and local restrictions.
 
 The installed app showed one TickTick calendar after upgrading. Its 54 task lists and seven folders matched the native account order, with Inbox shown separately. The previous seven selected lists and one selected Google calendar were preserved. The live check expanded a folder and cancelled the picker. [Live account check](../build/verification/ticktick-folder-order.json)
+
+## Calendar notifications
+
+Version 0.3.0 passed all nine user journeys and 70 unit tests on this Mac. The packaged run exercised the sidebar bell, preset and custom lead times, a denied permission request, restart, folder calendars, completed tasks, a rescheduled event and independent muting. A simulated notification center recorded the title and firing time of each reminder. The Google and TickTick services retained their original alarm settings. Google via Apple Calendar and a read-only Mac calendar each scheduled a timed reminder through the Mac calendar adapter. [Packaged run](../build/verification/desktop-2026-11-19T11-09-23-934Z/report.json) · [Bell menu](../build/verification/desktop-2026-11-19T11-09-23-934Z/calendar-bell-timing.png) · [Custom lead time](../build/verification/desktop-2026-11-19T11-09-23-934Z/calendar-notification-settings.png)
+
+The signed app loaded the native notification bridge and read its permission status from macOS. The native tests exercised a one-time Apple notification trigger, cancellation and timezone handling. [Native permission check](../build/verification/native-notification-status.json)

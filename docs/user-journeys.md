@@ -12,6 +12,7 @@ Each journey starts in the Mac app. Check provider changes independently of the 
 | 6. Hide, restore or delete | Right-click a Google or BMW meeting and hide it. Restart, restore it, then delete an eligible Google event after confirming the source action. | Hiding persists locally and leaves the source intact. Restoring makes the same meeting visible. Deletion removes the event at Google. The BMW source stays read-only even if its underlying copy is writable. |
 | 7. Recover from a failed connection or unclear write | Refresh with one source unavailable. Try an edit that fails. Create a TickTick task when the provider accepts it without returning its ID, then reopen the app. | The last loaded data and source status remain visible. Other sources keep working. The app distinguishes failure from an unclear outcome and prevents an automatic duplicate create. Refresh can recover a connection. |
 | 8. Organize my TickTick account | Open the list picker, expand or search a folder, and select the lists to show. Toggle the account off and on. Try one calendar per folder and a named calendar containing lists from different folders. Create a task in one of those lists. | A new account starts as one calendar containing Inbox and all active task lists. Folders and loose lists appear in their native order. Filters survive toggles and restart. Each task appears once and writes to its original list. Upgrading preserves earlier list selections. |
+| 9. Set my own reminders | Click a calendar's bell. Set a lead time, move a timed entry, hide the calendar, then mute the bell. | macOS receives one reminder for the updated start and lead time. The current view and the provider's reminder settings are independent. Muting removes that calendar's pending reminders. Other calendars keep theirs. Timed reminders survive restart. |
 
 ## First-release defaults
 
@@ -20,6 +21,8 @@ In **Connect TickTick**, approve task access in the system browser. In **Connect
 Use the Mac's local time zone. Open on today. A full week begins on Monday. Next X Days uses consecutive dates and an adjustable count. Use 15-minute increments for pointer edits and a 30-minute initial slot when giving an untimed task a time. Keep source selection, local hiding and connection credentials in the app's own profile.
 
 For uncertain TickTick recurrence behavior, show recurring tasks and explain any editing limitation before a change. For BMW, the initial contract is read-only. Direct Exchange mailbox access and organizer edits remain on the [roadmap](../.scratch/first-mac-release/spec.md).
+
+A single daily summary for dated tasks without a time and all-day events is planned for a later release.
 
 ## Evidence
 

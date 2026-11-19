@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, safeStorage, shell } from 'electron';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -10,6 +10,7 @@ import { createTickTick } from './providers/ticktick.mjs';
 import { authorizeTickTick } from './providers/ticktick-auth.mjs';
 import { createGoogle, authorizeGoogle, refreshGoogleToken } from './providers/google.mjs';
 import { createMacCalendar } from './providers/mac.mjs';
+import { createMacNotificationCenter } from './mac-notifications.mjs';
 
 app.setName('Calendar Central');
 const directory = path.dirname(fileURLToPath(import.meta.url));
@@ -43,6 +44,22 @@ if (testOrigin) {
   catch { googleConfigError = 'The configured Google desktop client file could not be loaded.'; }
 }
 const nativeAvailable = process.platform === 'darwin' && (!testOrigin || macFixture);
+
+function fixtureNotificationCenter(origin) {
+  async function call(action, reminders) {
+    const response = await fetch(origin + '/notification-center/' + action, {
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000),
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(reminders ?? null)
+    });
+    if (!response.ok) throw new Error('The test notification center could not respond.');
+    return response.json();
+  }
+  return {
+    authorization: () => call('authorization'),
+    requestAuthorization: () => call('request-authorization'),
+    replace: reminders => call('replace', reminders),
+  };
+}
 
 function macClient(googleCalendarIds) {
   if (testOrigin && !macFixture) throw new Error('Mac calendars are unavailable in this test profile.');
@@ -144,9 +161,10 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on('second-instance', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } });
   app.whenReady().then(async () => {
+    registry.notificationCenter = testOrigin ? fixtureNotificationCenter(testOrigin) : createMacNotificationCenter();
     const service = new CalendarService(new Profile(app.getPath('userData'), safeStorage), registry);
     for (const action of ['state', 'connect', 'macGoogleCalendars', 'openInternetAccounts', 'disconnect', 'setSource',
-      'configureTickTick', 'setTickTickCalendarVisible', 'save', 'complete', 'remove', 'hide', 'restore', 'acknowledge']) {
+      'configureTickTick', 'setTickTickCalendarVisible', 'setCalendarNotifications', 'save', 'complete', 'remove', 'hide', 'restore', 'acknowledge']) {
       ipcMain.handle('calendar:' + action, async (event, input) => {
         if (event.sender !== mainWindow?.webContents || event.senderFrame !== mainWindow.webContents.mainFrame
           || event.senderFrame.url !== pathToFileURL(index).href) throw new Error('Unknown calendar window.');
@@ -162,6 +180,20 @@ if (!app.requestSingleInstanceLock()) {
       });
     }
     await openWindow();
+    let notificationRefresh;
+    function refreshNotifications() {
+      notificationRefresh ??= service.run('refreshNotifications')
+        .catch(error => console.warn('Calendar notification refresh failed.', error.message))
+        .finally(() => { notificationRefresh = undefined; });
+    }
+    refreshNotifications();
+    const timer = setInterval(refreshNotifications, 5 * 60_000);
+    timer.unref();
+    powerMonitor.on('resume', refreshNotifications);
+    app.once('will-quit', () => {
+      clearInterval(timer);
+      powerMonitor.off('resume', refreshNotifications);
+    });
     app.on('activate', () => { if (!mainWindow) void openWindow(); });
   }).catch(error => { dialog.showErrorBox('Calendar Central could not start', error.message); app.quit(); });
 }

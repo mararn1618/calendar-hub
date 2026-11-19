@@ -1,20 +1,25 @@
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
+import { createNotificationFixture } from './notification-center.mjs';
 
 export async function startMacCalendarFixture(calendars) {
   const events = new Map();
   const calls = [];
+  const notifications = createNotificationFixture();
   const server = createServer(async (request, response) => {
     const reply = (result, status = 200) => {
       response.writeHead(status, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify(result));
     };
-    if (request.method !== 'POST' || request.url !== '/mac-helper') return reply({}, 404);
+    if (request.method !== 'POST') return reply({}, 404);
     try {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
-      const { args, input } = JSON.parse(Buffer.concat(chunks));
+      const contents = Buffer.concat(chunks).toString();
+      if (request.url.startsWith('/notification-center/')) return reply(notifications.call(request.url, contents));
+      if (request.url !== '/mac-helper') return reply({}, 404);
+      const { args, input } = JSON.parse(contents);
       const [action, route, calendarId, start, end] = args;
       calls.push({ action, route, calendarId, input });
       if (!['mac', 'google'].includes(route)) return reply({ error: 'Invalid route.', code: 'INVALID' });
@@ -50,7 +55,7 @@ export async function startMacCalendarFixture(calendars) {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   return {
-    calls, events, origin: `http://127.0.0.1:${server.address().port}`,
+    calls, events, notifications: notifications.state, origin: `http://127.0.0.1:${server.address().port}`,
     close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }),
   };
 }

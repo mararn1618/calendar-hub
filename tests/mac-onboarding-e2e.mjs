@@ -95,6 +95,19 @@ export async function verifyMacOnboarding({ temporary, evidence }) {
     const restored = fixtureItem(page, title);
     await restored.waitFor();
     assert.match(await restored.getAttribute('aria-description'), /12:00/);
+    const nativeReminders = [
+      { id: 'work-alert', title: 'Read-only meeting reminder', calendar: work, connection: 'Mac calendars' },
+      { id: 'personal-alert', title: 'Personal appointment reminder', calendar: google, connection: 'Google via Apple Calendar' }
+    ];
+    for (const entry of nativeReminders) {
+      const start = new Date(nextDay + 'T09:00').toISOString();
+      fixture.events.set(entry.id, { id: entry.id, title: entry.title, start, end: new Date(nextDay + 'T09:30').toISOString(),
+        allDay: false, version: '1', providerCalendarId: entry.calendar.id });
+      const account = page.locator('#source-list .sidebar-group').filter({ has: page.getByRole('heading', { name: entry.connection, exact: true }) });
+      await account.getByRole('button', { name: 'Notifications for ' + entry.calendar.name, exact: true }).click();
+      await until(() => [...fixture.notifications.pending.values()].some(reminder => reminder.title === entry.title &&
+        Date.parse(reminder.fireAt) === Date.parse(start) - 10 * 60_000), 'The Mac calendar reminder was not scheduled.');
+    }
     await manage(page);
     await dialog.getByRole('button', { name: 'Choose calendars', exact: true }).click();
     await picker(google).waitFor();

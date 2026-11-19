@@ -11,6 +11,7 @@ import { verifyTickTickJourneys } from './ticktick-journeys.mjs';
 import { expandFolder, verifyTickTickCalendars } from './ticktick-calendars-e2e.mjs';
 import { verifyGoogleJourneys } from './google-journeys.mjs';
 import { verifyMacOnboarding } from './mac-onboarding-e2e.mjs';
+import { verifyNotificationJourneys } from './notification-journeys.mjs';
 
 const project = fileURLToPath(new URL('../', import.meta.url));
 const started = new Date().toISOString(), run = started.replaceAll(/[:.]/g, '-');
@@ -25,7 +26,7 @@ const report = {
   started, app: appPath, applicationSha256: createHash('sha256').update(await readFile(join(appPath, 'Contents/Resources/app.asar'))).digest('hex'),
   os: execFileSync('sw_vers', ['-productVersion'], { encoding: 'utf8' }).trim(),
   arch: process.arch, zone: Intl.DateTimeFormat().resolvedOptions().timeZone, day: provider.day,
-  boundary: 'Packaged Mac app, production adapters, independent loopback TickTick and Google HTTP services, simulated browser consent for both providers, isolated profiles',
+  boundary: 'Packaged Mac app, production calendar adapters, loopback TickTick and Google services, simulated consent, Mac calendar store and notification center, isolated profiles',
   passed: [], status: 'running'
 };
 
@@ -152,6 +153,9 @@ try {
   console.log('Google edits, local hiding, deletion and stale data');
   page = await verifyGoogleJourneys({ ...helpers, page });
   report.passed.push('Google edits, guest review, occurrence and conflict', 'Hide, restore, read-only source, confirmed deletion', 'Stale cache and independent source recovery');
+  console.log('Per-calendar system notifications and lead times');
+  page = await verifyNotificationJourneys({ ...helpers, page });
+  report.passed.push('Per-calendar timed notifications, permission, quick/custom leads, hidden calendars, updates, completion, mute and restart with a simulated notification center');
   assert.deepEqual(driver.errors, [], 'Unexpected renderer errors');
   await driver.close();
   console.log('Select Google accounts in Apple Calendar');

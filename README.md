@@ -24,9 +24,17 @@ Open **Manage calendars → Edit lists**. Folders and loose lists follow their o
 - **By folder** gives each folder a calendar and collects Inbox and loose lists together.
 - **Custom calendars** lets you name calendars and combine lists from different folders. Each included list belongs to one calendar. New tasks still go to the TickTick list you choose when creating them.
 
+## Calendar notifications
+
+Click the bell beside a calendar to turn its Mac notifications on or off. Calendars start muted. On first use, allow notifications for Calendar Central in macOS. The default lead is 10 minutes before a timed task or event.
+
+Right-click the bell to choose a lead time, or open its notification settings under **Manage calendars** to enter a number of minutes. Zero means at the start. A calendar can send notifications while hidden from the timeline. These settings apply only to Calendar Central.
+
+The app schedules the next seven days of reminders with macOS, up to the nearest 64. Scheduled reminders can fire after you quit. Reopen the app to pick up source changes and fill the next week. A daily summary for all-day items is planned separately.
+
 ## Verify
 
-- `npm test` runs the adapter and calendar checks.
+- `npm test` runs the adapter, calendar and reminder checks. On a Mac, `node tests/mac-notifications-smoke.mjs` also checks the real notification API in a signed test app without requesting permission.
 - `npm run package:mac` followed by `npm run test:e2e` exercises the packaged app with fresh profiles, test consent screens for both providers, independent HTTP services and a simulated Mac calendar store.
 - `npm run test:live` opens the packaged app with its own real connections for an opt-in live run. Select the TickTick list and Google calendar where disposable items may be created. You can also name the destinations with `CALENDAR_LIVE_TICKTICK_LIST` and `CALENDAR_LIVE_GOOGLE_CALENDAR`. The runner uses unique titles and checks each original item. For Google through Apple Calendar it checks the local store. The live report links separate Google cloud evidence.
 

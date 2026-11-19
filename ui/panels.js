@@ -6,6 +6,20 @@ import { listCount, tickTickSections } from './ticktick-lists.js';
 const dateFormat = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' };
 const asISO = value => new Date(value).toISOString();
 const itemKey = item => ({ sourceId: item.sourceId, id: item.id, version: item.version });
+const defaultNotifications = { enabled: false, leadMinutes: 10 };
+
+function timingLabel(minutes) {
+  if (minutes === 0) return 'At start';
+  const unit = minutes % 1440 === 0 ? 'day' : minutes % 60 === 0 ? 'hour' : 'minute';
+  const amount = minutes / { day: 1440, hour: 60, minute: 1 }[unit];
+  return amount + ' ' + unit + (amount === 1 ? '' : 's') + ' before';
+}
+
+function bellIcon(enabled) {
+  const mark = icon('bell');
+  if (!enabled) mark.append(element('i'));
+  return mark;
+}
 
 function field(label, input) {
   const row = element('label', 'field');
@@ -57,7 +71,9 @@ export function createPanels(actions) {
   let opener;
   let menuOpener;
   let busy = false;
+  const pendingNotifications = new Set();
   const state = () => actions.state();
+  const notificationsFor = id => state().notificationPreferences?.[id] || defaultNotifications;
   const sourceOf = item => state().sources.find(source => source.id === item.sourceId);
   const viaAppleCalendar = data => state().connections.some(connection => connection.id === sourceOf(data)?.connectionId && connection.route === 'mac');
   const latestItem = item => state().items.find(entry => entry.id === item.id && entry.sourceId === item.sourceId);
@@ -136,6 +152,7 @@ export function createPanels(actions) {
 
   function settings() {
     const scroll = dialog.open && kind === 'settings' ? body.scrollTop : 0;
+    const focused = kind === 'settings' && document.activeElement.id;
     panel('settings', 'Calendars', { wide: true });
     const { connections, sources, ticktickCalendars, health } = state();
     if (connections.length) {
@@ -160,7 +177,7 @@ export function createPanels(actions) {
               settings();
               warning(text);
             });
-          }, health));
+          }, health), notificationSettingsButton(calendar));
           group.append(row);
         }
         const filter = element('div', 'settings-list-filter');
@@ -183,6 +200,7 @@ export function createPanels(actions) {
           policy.control.addEventListener('change', () => setSource(source, { readOnly: policy.control.checked }));
           row.append(policy.row);
         }
+        row.append(notificationSettingsButton(source));
         if (status && status.state !== 'current' && status.message) row.append(element('p', 'source-error', status.message));
         group.append(row);
       }
@@ -204,6 +222,115 @@ export function createPanels(actions) {
     body.append(options);
     footer.append(button('Hidden items', hiddenItems, 'text-button'), button('Done', close, 'primary'));
     body.scrollTop = scroll;
+    if (focused) document.getElementById(focused)?.focus({ preventScroll: true });
+  }
+
+  function notificationBell(calendar) {
+    const preference = notificationsFor(calendar.id);
+    const bell = button('', () => changeNotifications(calendar.id, { enabled: !notificationsFor(calendar.id).enabled }), 'icon-button notification-bell');
+    bell.id = 'calendar-bell-' + encodeURIComponent(calendar.id);
+    bell.dataset.calendarId = calendar.id;
+    bell.setAttribute('aria-label', 'Notifications for ' + calendar.name);
+    bell.setAttribute('aria-pressed', String(preference.enabled));
+    bell.setAttribute('aria-busy', String(pendingNotifications.has(calendar.id)));
+    bell.setAttribute('aria-haspopup', 'menu');
+    bell.setAttribute('aria-keyshortcuts', 'Shift+F10');
+    const timing = timingLabel(preference.leadMinutes);
+    bell.setAttribute('aria-description', (preference.enabled ? 'On. ' : 'Muted. ') + timing + '. Press Shift+F10 for timing.');
+    bell.title = (preference.enabled ? 'Mute notifications' : 'Enable notifications') + ' · ' + timing + '. Right-click for timing.';
+    bell.append(bellIcon(preference.enabled));
+    bell.addEventListener('contextmenu', event => {
+      event.preventDefault();
+      notificationMenu(calendar, event.clientX, event.clientY, bell);
+    });
+    bell.addEventListener('keydown', event => {
+      if (!(event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) return;
+      event.preventDefault();
+      const rect = bell.getBoundingClientRect();
+      notificationMenu(calendar, rect.left, rect.bottom, bell);
+    });
+    return bell;
+  }
+
+  async function changeNotifications(calendarId, patch) {
+    if (pendingNotifications.has(calendarId)) return;
+    pendingNotifications.add(calendarId);
+    const id = 'calendar-bell-' + encodeURIComponent(calendarId);
+    document.getElementById(id)?.setAttribute('aria-busy', 'true');
+    try { await actions.mutate('setCalendarNotifications', { calendarId, ...patch }); }
+    catch (error) { actions.report(errorText(error)); }
+    finally {
+      pendingNotifications.delete(calendarId);
+      document.getElementById(id)?.setAttribute('aria-busy', 'false');
+    }
+  }
+
+  function notificationSettingsButton(calendar) {
+    const preference = notificationsFor(calendar.id);
+    const open = button('', () => notificationSettings(calendar, true), 'notification-settings');
+    open.id = 'calendar-notification-settings-' + encodeURIComponent(calendar.id);
+    open.dataset.calendarId = calendar.id;
+    open.title = 'Notification settings for ' + calendar.name;
+    open.setAttribute('aria-label', open.title);
+    const status = preference.enabled ? timingLabel(preference.leadMinutes) : 'Muted';
+    open.setAttribute('aria-description', status);
+    open.append(bellIcon(preference.enabled), document.createTextNode(status));
+    return open;
+  }
+
+  function notificationSettings(calendar, fromSettings = false) {
+    const scroll = fromSettings ? body.scrollTop : 0;
+    function back() {
+      if (!fromSettings) return close();
+      settings();
+      body.scrollTop = scroll;
+      document.getElementById('calendar-notification-settings-' + encodeURIComponent(calendar.id))?.focus({ preventScroll: true });
+    }
+    const previous = notificationsFor(calendar.id);
+    panel('notifications', 'Calendar notifications', { back });
+    const form = element('form', 'editor-form');
+    form.id = 'notification-form';
+    const toggle = check('Enable notifications', previous.enabled);
+    const lead = input('number', 'notification-lead', previous.leadMinutes);
+    lead.min = '0';
+    lead.max = '10080';
+    lead.step = '1';
+    lead.required = true;
+    form.append(element('strong', 'settings-subhead', calendar.name), toggle.row, field('Minutes before start', lead),
+      element('p', 'help', 'Use 0 to be notified when a timed item starts.'));
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      if (!form.reportValidity()) return;
+      const patch = {};
+      if (toggle.control.checked !== previous.enabled) patch.enabled = toggle.control.checked;
+      if (lead.valueAsNumber !== previous.leadMinutes) patch.leadMinutes = lead.valueAsNumber;
+      if (!Object.keys(patch).length) return back();
+      write('setCalendarNotifications', { calendarId: calendar.id, ...patch }, back);
+    });
+    body.append(form);
+    const submit = element('button', 'primary', 'Save');
+    submit.type = 'submit';
+    submit.setAttribute('form', form.id);
+    footer.append(button('Cancel', back), submit);
+    lead.focus({ preventScroll: true });
+  }
+
+  function notificationMenu(calendar, x, y, trigger) {
+    const preference = notificationsFor(calendar.id);
+    const choices = [0, 5, 10, 15, 30, 60].map(minutes => {
+      const option = button(timingLabel(minutes), () => {
+        closeMenu();
+        if (minutes !== notificationsFor(calendar.id).leadMinutes) void changeNotifications(calendar.id, { leadMinutes: minutes });
+      });
+      option.setAttribute('role', 'menuitemradio');
+      option.setAttribute('aria-label', timingLabel(minutes));
+      option.setAttribute('aria-checked', String(minutes === preference.leadMinutes));
+      return option;
+    });
+    const custom = button('Custom lead time…', () => { closeMenu(); notificationSettings(calendar); });
+    custom.setAttribute('role', 'menuitem');
+    choices.push(custom);
+    showMenu('Notification timing', choices, x, y, trigger);
   }
   function tickTickLists(connectionId, fromSettings = false) {
     const connection = state().connections.find(connection => connection.id === connectionId);
@@ -674,11 +801,22 @@ export function createPanels(actions) {
   function closeMenu(restore = true) {
     if (menu.hidden) return;
     menu.hidden = true;
-    if (restore && menuOpener?.isConnected) menuOpener.focus({ preventScroll: true });
+    if (restore) {
+      const target = menuOpener?.isConnected ? menuOpener : document.getElementById(menuOpener?.id || '');
+      target?.focus({ preventScroll: true });
+    }
   }
-  function itemMenu(item, x, y, trigger) {
+  function showMenu(label, choices, x, y, trigger) {
     closeMenu(false);
     menuOpener = trigger;
+    menu.setAttribute('aria-label', label);
+    menu.replaceChildren(...choices);
+    menu.hidden = false;
+    menu.style.left = Math.max(6, Math.min(x, innerWidth - menu.offsetWidth - 6)) + 'px';
+    menu.style.top = Math.max(6, Math.min(y, innerHeight - menu.offsetHeight - 6)) + 'px';
+    (choices.find(choice => choice.getAttribute('aria-checked') === 'true') || choices[0]).focus({ preventScroll: true });
+  }
+  function itemMenu(item, x, y, trigger) {
     const source = sourceOf(item);
     const choices = [];
     const add = (label, action, danger = false) => {
@@ -690,11 +828,7 @@ export function createPanels(actions) {
     if (completable(item, source)) add('Complete task', () => complete(item));
     if (source.provider !== 'ticktick') add('Hide in Calendar Central', () => hide(item));
     if (deletable(item, source)) add('Delete from Google', () => review('remove', item, itemKey(item)), true);
-    menu.replaceChildren(...choices);
-    menu.hidden = false;
-    menu.style.left = Math.max(6, Math.min(x, innerWidth - menu.offsetWidth - 6)) + 'px';
-    menu.style.top = Math.max(6, Math.min(y, innerHeight - menu.offsetHeight - 6)) + 'px';
-    choices[0].focus({ preventScroll: true });
+    showMenu('Item actions', choices, x, y, trigger);
   }
   document.addEventListener('pointerdown', event => { if (!menu.contains(event.target)) closeMenu(false); });
   window.addEventListener('blur', () => closeMenu(false));
@@ -711,5 +845,5 @@ export function createPanels(actions) {
     else if (kind === 'hidden') hiddenItems();
     else if (kind === 'uncertain') uncertainItems();
   }
-  return { edit, settings, tickTickLists, hiddenItems, uncertainItems, menu: itemMenu, closeMenu, sync, reschedule: (item, change) => save(item, { ...itemKey(item), title: item.title, ...change }) };
+  return { edit, settings, notificationBell, tickTickLists, hiddenItems, uncertainItems, menu: itemMenu, closeMenu, sync, reschedule: (item, change) => save(item, { ...itemKey(item), title: item.title, ...change }) };
 }

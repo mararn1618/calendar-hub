@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { createNotificationFixture } from './fixtures/notification-center.mjs';
 
 export function civilDay(date = new Date()) {
   return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
@@ -57,6 +58,7 @@ export async function startProviderServer() {
   addEvent('bmw-copy', 'bmwmeeting', 'BMW project sync', stamp(day, 10, 30), stamp(day, 11, 30));
   addEvent('tick-copy', 'tickcopy', 'Review the launch plan', stamp(day, 9), stamp(day, 9, 30));
   const controls = { unavailable: new Set(), noTickId: false, requests: [] };
+  const notifications = createNotificationFixture();
   const authorizations = new Map();
   const publicClients = new Map();
   let origin, currentTickToken;
@@ -71,6 +73,9 @@ export async function startProviderServer() {
       response.end(body === undefined ? undefined : JSON.stringify(body));
     };
     try {
+      if (method === 'POST' && u.pathname.startsWith('/notification-center/')) {
+        return json(200, notifications.call(u.pathname, contents));
+      }
       const isTickSignIn = u.pathname.startsWith('/tick/oauth/');
       const oauthPath = isTickSignIn ? u.pathname.slice(5) : u.pathname;
       if (isTickSignIn && oauthPath === '/oauth/register' && method === 'POST') {
@@ -187,5 +192,6 @@ export async function startProviderServer() {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   origin = 'http://127.0.0.1:' + server.address().port;
-  return { origin, day, originals, events, projects, projectGroups, controls, close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
+  return { origin, day, originals, events, projects, projectGroups, controls, notifications: notifications.state,
+    close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
 }

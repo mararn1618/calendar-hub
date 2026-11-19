@@ -3,7 +3,7 @@ import { $, button, element, errorText, healthFor, icon, iconButton, providers, 
 import { createPanels } from './panels.js';
 import { createPlanner } from './planner.js';
 
-const emptyState = { connections: [], sources: [], ticktickCalendars: [], items: [], hidden: [], health: [], uncertain: [] };
+const emptyState = { connections: [], sources: [], ticktickCalendars: [], items: [], hidden: [], health: [], uncertain: [], notificationPreferences: {}, notificationError: null };
 let data = emptyState;
 let selectedDate = localDate();
 let month = monthStart(selectedDate);
@@ -44,7 +44,7 @@ function report(text, action) {
 }
 
 const panels = createPanels({
-  state: () => data, selectedDate: () => selectedDate, mutate, report, toast, refresh: () => refresh(true)
+  state: () => data, selectedDate: () => selectedDate, mutate, report, toast, refresh: refreshCalendars
 });
 const planner = createPlanner(viewport, {
   selectDay: day => goTo(day, 'day'), navigate, edit: panels.edit, create: defaults => panels.edit(undefined, defaults),
@@ -82,7 +82,13 @@ function renderHeading() {
 }
 function renderSources() {
   const list = $('#source-list');
+  const focused = list.contains(document.activeElement) ? document.activeElement.id : '';
   const groups = [];
+  function calendarRow(calendar, checkbox) {
+    const row = element('div', 'sidebar-calendar-row');
+    row.append(checkbox, panels.notificationBell(calendar));
+    return row;
+  }
   for (const connection of data.connections) {
     const group = element('div', 'sidebar-group');
     const heading = element('h3', '', connection.name || providers[connection.provider]);
@@ -93,26 +99,26 @@ function renderSources() {
       configure.id = 'edit-ticktick-' + connection.id;
       configure.dataset.connectionId = connection.id;
       configure.title = 'Edit lists for ' + heading.textContent;
-      const row = element('div', 'sidebar-calendar-heading');
-      group.append(row);
-      const toggles = calendars.map(calendar => tickTickCalendarCheckbox(calendar, async visible => {
+      const rows = calendars.map(calendar => calendarRow(calendar, tickTickCalendarCheckbox(calendar, async visible => {
         try { await mutate('setTickTickCalendarVisible', { connectionId: connection.id, calendarId: calendar.id, visible }); }
         catch (error) { report(errorText(error)); renderSources(); }
-      }, data.health));
-      if (connection.ticktick.mode === 'account' && toggles.length === 1) row.append(toggles[0], configure);
+      }, data.health)));
+      if (connection.ticktick.mode === 'account' && rows.length === 1) rows[0].append(configure);
       else {
-        row.append(heading, configure);
-        group.append(...toggles);
+        const header = element('div', 'sidebar-calendar-heading');
+        header.append(heading, configure);
+        group.append(header);
       }
+      group.append(...rows);
       groups.push(group);
       continue;
     }
     group.append(heading);
     for (const source of data.sources.filter(source => source.connectionId === connection.id)) {
-      group.append(sourceCheckbox(source, async selected => {
+      group.append(calendarRow(source, sourceCheckbox(source, async selected => {
         try { await mutate('setSource', { sourceId: source.id, selected }); }
         catch (error) { report(errorText(error)); renderSources(); }
-      }, healthFor(source, data.health)));
+      }, healthFor(source, data.health))));
     }
     groups.push(group);
   }
@@ -122,6 +128,7 @@ function renderSources() {
     groups.push(add);
   }
   list.replaceChildren(...groups);
+  if (focused) document.getElementById(focused)?.focus({ preventScroll: true });
 }
 
 function banner(text, action, dismiss = false, alert = true) {
@@ -136,15 +143,17 @@ function renderStatus() {
   const failures = data.health.filter(entry => entry.state !== 'current');
   const latest = data.health.map(h => h.checkedAt).filter(Boolean).sort().at(-1);
   const syncing = Boolean(pending);
-  const status = loadError || failures.length ? 'Needs attention' : syncing ? 'Refreshing…' : !loadedRange ? 'Opening calendar' : !data.connections.length ? 'No connections' : latest ? 'Updated ' + localTime(latest) : 'Connected';
+  const needsAttention = loadError || failures.length || data.notificationError;
+  const status = needsAttention ? 'Needs attention' : syncing ? 'Refreshing…' : !loadedRange ? 'Opening calendar' : !data.connections.length ? 'No connections' : latest ? 'Updated ' + localTime(latest) : 'Connected';
   $('#sync-status').textContent = status;
-  $('#status-dot').className = 'status-dot ' + (loadError || failures.length ? 'warning' : data.connections.length ? 'online' : '');
+  $('#status-dot').className = 'status-dot ' + (needsAttention ? 'warning' : data.connections.length ? 'online' : '');
   $('#refresh').classList.toggle('refreshing', syncing);
   $('#refresh').setAttribute('aria-busy', String(syncing));
   viewport.setAttribute('aria-busy', String(syncing));
   const banners = [];
-  const retry = { label: 'Retry refresh', action: () => refresh(true) };
+  const retry = { label: 'Retry refresh', action: refreshCalendars };
   if (loadError) banners.push(banner(loadError, retry));
+  if (data.notificationError) banners.push(banner(data.notificationError, retry));
   if (failures.length) {
     const descriptions = failures.map(entry => {
       const name = data.sources.find(source => source.id === entry.sourceId)?.name || data.connections.find(connection => connection.id === entry.connectionId)?.name || 'Calendar';
@@ -157,7 +166,7 @@ function renderStatus() {
     const n = data.uncertain.length;
     banners.push(banner(`${n} unconfirmed ${n === 1 ? 'write needs' : 'writes need'} review.`, { label: 'Review writes', action: panels.uncertainItems }));
   }
-  if (notice) banners.push(banner(notice.text, notice.action, true));
+  if (notice && notice.text !== data.notificationError) banners.push(banner(notice.text, notice.action, true));
   $('#notices').replaceChildren(...banners);
 }
 
@@ -199,7 +208,10 @@ function draw() {
   renderStatus();
 }
 
-function refresh(force = false, preferencesOnly = false) {
+function refreshCalendars() {
+  return refresh({ force: true, refreshNotifications: true });
+}
+function refresh({ force = false, preferencesOnly = false, refreshNotifications = false } = {}) {
   clearTimeout(refreshTimer);
   const { start, end } = range();
   const key = rangeKey({ start, end });
@@ -212,7 +224,7 @@ function refresh(force = false, preferencesOnly = false) {
   request.promise = (async () => {
     try {
       if (!window.calendar?.state) throw new Error('Open the Calendar Central Mac app to load your calendars.');
-      const result = await window.calendar.state({ start, end, ...(reuseChecks && { preferencesOnly: true }) });
+      const result = await window.calendar.state({ start, end, ...(reuseChecks && { preferencesOnly: true }), ...(refreshNotifications && { refreshNotifications: true }) });
       if (serial !== sequence || key !== rangeKey(range())) return;
       data = { ...emptyState, ...result };
       loadedRange = key;
@@ -239,10 +251,11 @@ async function mutate(method, payload) {
     if (!window.calendar?.[method]) throw new Error('Open the Calendar Central Mac app to change a calendar.');
     await window.calendar[method](payload);
   } catch (error) { failure = error; }
-  const preferencesOnly = !failure && (method === 'configureTickTick' || method === 'setTickTickCalendarVisible');
+  const notifications = method === 'setCalendarNotifications';
+  const preferencesOnly = notifications || (!failure && (method === 'configureTickTick' || method === 'setTickTickCalendarVisible'));
   while (preferencesOnly && pending && !pending.reuseChecks && pending.serial === sequence) await pending.promise;
-  rangeCache.clear();
-  await refresh(true, preferencesOnly);
+  if (!notifications) rangeCache.clear();
+  await refresh({ force: true, preferencesOnly });
   if (failure) throw failure;
   notice = undefined;
   renderStatus();
@@ -274,7 +287,7 @@ function goToday() { goTo(localDate()); planner.scrollToWorkday(); }
 $('#new-item').addEventListener('click', () => panels.edit());
 $('#manage-calendars').addEventListener('click', panels.settings);
 $('#hidden-items').addEventListener('click', panels.hiddenItems);
-$('#refresh').addEventListener('click', () => refresh(true));
+$('#refresh').addEventListener('click', refreshCalendars);
 $('#today').addEventListener('click', goToday);
 $('#prev').addEventListener('click', () => navigate(-1));
 $('#next').addEventListener('click', () => navigate(1));
@@ -296,10 +309,16 @@ function changeCount(commit) {
 $('#day-count').addEventListener('input', () => changeCount(false));
 $('#day-count').addEventListener('change', () => changeCount(true));
 document.addEventListener('keydown', event => {
+  if (event.key === 'F5' || ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'r')) {
+    event.preventDefault();
+    if (!event.repeat) void refreshCalendars();
+    return;
+  }
   if (event.metaKey || event.ctrlKey || event.altKey || $('#dialog').open || !$('#context-menu').hidden || event.target.closest('input, select, textarea, [contenteditable]')) return;
   const key = event.key.toLowerCase();
   if (key === 'n') panels.edit();
   else if (key === 't') goToday();
+  else if (key === 'r' && !event.repeat) void refreshCalendars();
   else if (event.target === viewport || event.target === document.body) {
     if (key === 'arrowleft' || key === 'arrowright') { event.preventDefault(); navigate(key === 'arrowleft' ? -1 : 1); }
   }
@@ -316,7 +335,7 @@ function updateClock() {
     today = current;
     zone = currentZone;
     goTo(follow ? current : selectedDate);
-    void refresh(true);
+    void refresh({ force: true });
   } else {
     planner.clock();
     if (woke && !document.hidden) void refresh();

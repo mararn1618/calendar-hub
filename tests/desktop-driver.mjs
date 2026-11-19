@@ -88,37 +88,39 @@ export class DesktopDriver {
     const isAllDay = await block.evaluate(node => node.classList.contains('all-day-item'));
     if (isAllDay) await block.scrollIntoViewIfNeeded();
     const measure = async () => {
-      const [origin, target, after, area, header] = await Promise.all([
-        block.boundingBox(), clock.boundingBox(), nextClock.boundingBox(), viewport.boundingBox(), viewport.locator('.timeline-header').boundingBox()
+      const [origin, target, after, area, header, handle] = await Promise.all([
+        block.boundingBox(), clock.boundingBox(), nextClock.boundingBox(), viewport.boundingBox(),
+        viewport.locator('.timeline-header').boundingBox(), edge && block.locator('[data-edge="' + edge + '"]').boundingBox()
       ]);
       assert(origin && target && after && area && header, 'Dragged item and target must be on the current calendar.');
+      assert(!edge || handle, 'Resize handle must exist for this source.');
       const ppm = hour === 23 ? 1.1 : (after.y - target.y) / 60;
       const grip = Math.min(12, Math.max(6, origin.height / 2));
       const y = target.y + minute * ppm + (edge || isAllDay ? 0 : grip);
-      return { origin, target, area, header, y, grip };
+      const sourceX = handle ? handle.x + handle.width / 2 : origin.x + origin.width / 2;
+      const sourceY = handle ? handle.y + handle.height / 2 : origin.y + grip;
+      return { target, y, sourceX, sourceY, top: header.y + header.height + 12, bottom: area.y + area.height - 18 };
     };
     let bounds = await measure();
-    if (bounds.y < bounds.header.y + bounds.header.height + 35 || bounds.y > bounds.area.y + bounds.area.height - 35) {
-      await viewport.hover();
-      const middle = bounds.area.y + bounds.area.height * 0.54;
-      await page.mouse.wheel(0, bounds.y - middle);
-      await until(async () => {
-        bounds = await measure();
-        return bounds.y > bounds.header.y + bounds.header.height + 26 && bounds.y < bounds.area.y + bounds.area.height - 30;
-      }, 'The target hour could not be scrolled into view.');
+    const low = isAllDay ? bounds.y : Math.min(bounds.sourceY, bounds.y);
+    const high = isAllDay ? bounds.y : Math.max(bounds.sourceY, bounds.y);
+    const center = (bounds.top + bounds.bottom) / 2;
+    if (low < bounds.top || high > bounds.bottom) {
+      const focus = high - low <= bounds.bottom - bounds.top ? (low + high) / 2 : bounds.sourceY;
+      await viewport.evaluate((node, delta) => { node.scrollTop += delta; }, focus - center);
+      bounds = await measure();
     }
-    if (isAllDay) await block.hover();
-    bounds = await measure();
-    const handle = edge ? await block.locator('[data-edge="' + edge + '"]').boundingBox() : null;
-    const { origin, target, y, grip } = bounds;
-    assert(!edge || handle, 'Resize handle must exist for this source.');
-    const sourceX = handle ? handle.x + handle.width / 2 : origin.x + origin.width / 2;
-    const sourceY = handle ? handle.y + handle.height / 2 : origin.y + grip;
+    const { sourceX, sourceY } = bounds;
     assert(await block.evaluate((node, point) => node.contains(document.elementFromPoint(point.x, point.y)), { x: sourceX, y: sourceY }),
       'The drag must start on the requested item.');
     await page.mouse.move(sourceX, sourceY);
     await page.mouse.down();
-    await page.mouse.move(target.x + target.width * 0.53, y + 0.5, { steps: 12 });
+    if (bounds.y < bounds.top || bounds.y > bounds.bottom) {
+      await page.mouse.move(sourceX + 8, sourceY);
+      await viewport.evaluate((node, delta) => { node.scrollTop += delta; }, bounds.y - center);
+      bounds = await measure();
+    }
+    await page.mouse.move(bounds.target.x + bounds.target.width * 0.53, bounds.y + 0.5, { steps: 12 });
     const destination = await measure();
     await page.mouse.move(destination.target.x + destination.target.width * 0.53, destination.y + 0.5);
     await page.mouse.up();

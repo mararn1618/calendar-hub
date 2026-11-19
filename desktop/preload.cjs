@@ -2,7 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const operations = ['state', 'setAppearance', 'connect', 'renameConnection', 'macAccountCalendars', 'macGoogleCalendars', 'openInternetAccounts',
   'openCalendarPrivacy', 'requestCalendarAccess', 'disconnect', 'setSource',
-  'configureTickTick', 'setTickTickCalendarVisible', 'setCalendarColor', 'setCalendarNotifications', 'save', 'complete', 'remove', 'hide', 'restore', 'acknowledge'];
+  'configureTickTick', 'setTickTickCalendarVisible', 'setTickTickSyncInterval', 'setCalendarColor', 'setCalendarNotifications', 'save', 'complete', 'remove', 'hide', 'restore', 'acknowledge'];
 const calendar = {
   invoke(operation, input) {
     if (!operations.includes(operation)) throw new Error('Choose an available calendar action.');

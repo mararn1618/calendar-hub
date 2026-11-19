@@ -81,3 +81,13 @@ All 123 automated tests and 21 packaged checks passed on Apple Silicon. At a win
 With two Exchange accounts denied access and TickTick returning HTTP 429, one button opened the Calendars privacy pane through the test settings recorder. Returning refreshed both Mac accounts and kept the separate TickTick warning. First-time setup showed the privacy action after denial. An existing account requested access only when the user selected **Allow Calendar Access**. [Permission and recovery checks](../tests/mac-usability-journeys.mjs)
 
 Hiding a three-day Exchange occurrence removed all three all-day entries while a refresh was still waiting. The occurrence stayed hidden after the provider changed its local ID and after restart. Restoring it while offline made no provider requests. The next occurrence and a matching title on another calendar stayed visible. The Exchange checks used a simulated Apple Calendar store because the BMW account was unavailable on the test Mac. [Exchange hide and restore checks](../tests/exchange-hide-journeys.mjs)
+
+## Calendar Hub 0.6.1
+
+All 150 automated tests and all 23 packaged checks passed on Apple Silicon. The packaged app also passed at a window size of 1024 × 653 in UTC.
+
+With 52 selected TickTick lists already discovered, the packaged app opened a three-day view with one task request. Extending it to five days and returning focus each made zero TickTick requests. The first HTTP 429 stopped that account after one request. Focus, reminders and Refresh made zero further TickTick requests during its cooldown. Exchange continued to update. These counts come from a local HTTP provider running the production app and adapters. [Packaged request and polling checks](../tests/ticktick-request-journey.mjs)
+
+A change in a one-minute folder appeared on its next check. A Manual folder kept its saved task until Refresh. Both settings survived restart. Isolated service tests also covered hidden reminder calendars, moves between folders, interrupted batches and account cooldowns after restart. [Sync interval tests](../tests/ticktick-sync.test.mjs) · [HTTP cooldown tests](../tests/ticktick-rate-limit.test.mjs)
+
+A live check in a dedicated TickTick list used five disposable tasks. The bulk lookup returned a timed task, a task created with only a due date, an all-day task crossing the start date and a task spanning the entire window. For an all-day task at midnight in UTC+14, a one-day Berlin query missed it and extending the query returned it. Calendar Hub includes that time-zone margin and filters results to the requested dates. All five tasks were marked complete after the check. [TickTick adapter tests](../tests/ticktick.test.mjs)

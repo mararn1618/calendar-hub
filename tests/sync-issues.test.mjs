@@ -64,3 +64,19 @@ test('a reminder-only access failure has the same recovery and Google web access
   assert.match(issues.summary, /Google denied access/);
   assert.equal(syncIssues({ connections, health }).macAccess, undefined);
 });
+
+test('one TickTick cooldown shows its local retry time and keeps other accounts actionable', () => {
+  const now = +new Date(2026, 10, 19, 16, 30);
+  const retryAt = +new Date(2026, 10, 19, 16, 42);
+  const limited = { connectionId: tickTick.id, state: 'error', message: reason, code: 'RATE_LIMITED', status: 429, retryAt };
+  const model = { connections: [tickTick, google], health: [limited], notificationFailures: [limited] };
+  const issues = syncIssues(model, now);
+  assert.match(issues.summary, /16:42/);
+  assert.equal(issues.onlyTickTickPaused, true);
+  assert.equal(issues.accounts[0].retryAt, retryAt);
+  model.health.push({ connectionId: google.id, state: 'error', message: 'Reconnect to Google.' });
+  assert.match(syncIssues(model, now).summary, /Reconnect to Google/);
+  assert.ok(!syncIssues(model, now).onlyTickTickPaused);
+  assert.doesNotMatch(syncIssues(model, retryAt).summary, /16:42/);
+  assert.match(syncIssues({ connections: [tickTick], health: [limited], nextTickTickRefreshAt: null }, retryAt).summary, /Refresh to try again/);
+});

@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createNotificationFixture } from './fixtures/notification-center.mjs';
 
 export function civilDay(date = new Date()) {
@@ -8,6 +9,23 @@ export function civilDay(date = new Date()) {
 }
 const stamp = (day, hour, minute = 0) => new Date(day + 'T' + String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0') + ':00').toISOString();
 const tickStamp = value => new Date(value).toISOString().replace('Z', '+0000');
+
+export function isProviderRead({ provider, method, path }) {
+  return method === 'GET' || (provider === 'ticktick' && method === 'POST' && path === 'task/undone');
+}
+
+function unfinishedTasks({ projectIds, startDate, endDate, taskIds }, account) {
+  const start = Date.parse(startDate), end = Date.parse(endDate);
+  if (!Array.isArray(projectIds) || !Number.isFinite(start) || !Number.isFinite(end) ||
+      end < start || end - start >= 14 * 86_400_000 || (taskIds !== undefined && !Array.isArray(taskIds))) return null;
+  const projects = new Set(projectIds.map(id => id === 'inbox' ? account.inbox : id));
+  return [...account.originals.values()].filter(task => {
+    if (task.status || !projects.has(task.projectId) || (taskIds && !taskIds.includes(task.id))) return false;
+    // The fixture models overlapping schedules, including tasks with only a due date.
+    const first = Date.parse(task.startDate || task.dueDate), last = Date.parse(task.dueDate || task.startDate);
+    return first <= end && last >= start;
+  });
+}
 
 function fixtureAccount(day, zone, id, multipleAccounts) {
   const inbox = multipleAccounts ? (id === 'first' ? 'inbox101' : 'inbox202') : 'inbox-user';
@@ -67,7 +85,18 @@ export async function startProviderServer({ multipleAccounts = false, macCalenda
   const day = civilDay(), zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const accounts = [fixtureAccount(day, zone, 'first', multipleAccounts)];
   if (multipleAccounts) accounts.push(fixtureAccount(day, zone, 'second', true));
-  const controls = { unavailable: new Set(), noTickId: false, requests: [] };
+  const readLimits = new Map();
+  const controls = {
+    unavailable: new Set(), noTickId: false, requests: [],
+    blockTickReads(retryAfterSeconds, account = 'first') {
+      const limit = { retryAfterSeconds, retryAt: 0 };
+      readLimits.set(account, limit);
+      return async () => {
+        readLimits.delete(account);
+        await delay(Math.max(0, limit.retryAt - Date.now()) + 100);
+      };
+    },
+  };
   const notifications = createNotificationFixture();
   const authorizations = new Map();
   const publicClients = new Map();
@@ -81,8 +110,8 @@ export async function startProviderServer({ multipleAccounts = false, macCalenda
     const buffers = [];
     for await (const chunk of request) buffers.push(chunk);
     const contents = Buffer.concat(buffers).toString();
-    const json = (status, body) => {
-      response.writeHead(status, { 'content-type': 'application/json' });
+    const json = (status, body, headers) => {
+      response.writeHead(status, { 'content-type': 'application/json', ...headers });
       response.end(body === undefined ? undefined : JSON.stringify(body));
     };
     try {
@@ -145,11 +174,18 @@ export async function startProviderServer({ multipleAccounts = false, macCalenda
         return expected && request.headers.authorization === 'Bearer ' + expected;
       });
       if (!account) return json(401, { error: { message: 'Invalid test credential.' } });
-      const { calendars, projects, projectGroups, originals, events, inbox } = account;
+      const { calendars, projects, projectGroups, originals, events } = account;
       const body = contents ? JSON.parse(contents) : {};
       const call = { provider: isGoogle ? 'google' : 'ticktick', account: account.id, method, path: parts.join('/'), query: Object.fromEntries(u.searchParams) };
+      if (!isGoogle && call.path === 'task/undone') call.range = body;
       controls.requests.push(call);
-      if (method !== 'GET' && controls.beforeWrite) {
+      const limit = !isGoogle && readLimits.get(account.id);
+      if (limit && isProviderRead(call)) {
+        limit.retryAt = Date.now() + limit.retryAfterSeconds * 1000;
+        call.retryAt = limit.retryAt;
+        return json(429, { error: 'Rate limited' }, { 'retry-after': String(limit.retryAfterSeconds) });
+      }
+      if (!isProviderRead(call) && controls.beforeWrite) {
         const status = await controls.beforeWrite(call);
         if (status) return json(status, { error: { message: 'Fixture rejected the change.' } });
       }
@@ -182,7 +218,6 @@ export async function startProviderServer({ multipleAccounts = false, macCalenda
         }
         if (method === 'DELETE') { entries.delete(id); return json(204); }
       } else {
-        if (method === 'GET' && controls.tickReadStatus) return json(controls.tickReadStatus);
         const [first, second, third, id, action] = parts;
         if (first === 'project' && !second) {
           const offset = Number(u.searchParams.get('offset') || 0);
@@ -197,7 +232,10 @@ export async function startProviderServer({ multipleAccounts = false, macCalenda
           if (method === 'GET') return json(200, original);
           if (action === 'complete' && method === 'POST') { original.status = 2; return json(200); }
         }
-        if (first === 'task' && second === 'undone') return json(200, [...originals.values()].filter(item => item.projectId === inbox && !item.status));
+        if (first === 'task' && second === 'undone' && method === 'POST') {
+          const tasks = unfinishedTasks(body, account);
+          return tasks ? json(200, tasks) : json(400, { error: 'Provide project IDs and a date range of up to 14 days.' });
+        }
         if (first === 'task' && second === 'completeTasks') {
           for (const id of body.taskIds) if (originals.has(id)) originals.get(id).status = 2;
           return json(200, body.taskIds);

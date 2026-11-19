@@ -120,7 +120,7 @@ async function verifyDeniedAccess(driver, page, mac, provider) {
   await item(page, cachedTask).waitFor();
 
   mac.controls.calendarAccess = 'denied';
-  provider.controls.tickReadStatus = 429;
+  const resumeTickReads = provider.controls.blockTickReads(4);
   for (const office of offices) {
     Object.assign(mac.events.get(office.id), { title: office.name + ' updated', version: '2' });
   }
@@ -157,6 +157,7 @@ async function verifyDeniedAccess(driver, page, mac, provider) {
   await details.getByText(throttleMessage).waitFor();
   await button(details, 'Done').click();
   assert.equal(provider.controls.requests.length, tickTickRequests, 'Returning from Calendar Privacy Settings retried TickTick.');
+  return resumeTickReads;
 }
 
 async function verifyUnrequestedAccess(page, mac, provider, callsAtRestart) {
@@ -210,7 +211,7 @@ export async function verifyMacUsability({ temporary, evidence }) {
     await verifyFirstConnection(driver, page, mac);
     await connectAccounts(driver, page);
     await collapseSidebar(driver, page);
-    await verifyDeniedAccess(driver, page, mac, provider);
+    const resumeTickReads = await verifyDeniedAccess(driver, page, mac, provider);
 
     mac.controls.calendarAccess = 'undetermined';
     const callsAtRestart = mac.calls.length;
@@ -218,7 +219,7 @@ export async function verifyMacUsability({ temporary, evidence }) {
     await assertSidebar(page, false);
     await verifyUnrequestedAccess(page, mac, provider, callsAtRestart);
 
-    delete provider.controls.tickReadStatus;
+    await resumeTickReads();
     await refresh(page);
     await item(page, updatedTask).waitFor();
     await button(page, 'Sync details').waitFor({ state: 'hidden' });

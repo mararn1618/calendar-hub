@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { appPath, createItem, DesktopDriver, refresh, until } from './desktop-driver.mjs';
 import { startProviderServer } from './provider-server.mjs';
 import { verifyTickTickJourneys } from './ticktick-journeys.mjs';
+import { verifyTickTickRequestJourney } from './ticktick-request-journey.mjs';
 import { expandFolder, verifyTickTickCalendars } from './ticktick-calendars-e2e.mjs';
 import { verifyGoogleJourneys } from './google-journeys.mjs';
 import { verifyMacOnboarding } from './mac-onboarding-e2e.mjs';
@@ -242,15 +243,23 @@ async function verifyRemainingJourneys(page, helpers) {
 
 try {
   execFileSync('codesign', ['--verify', '--deep', '--strict', appPath]);
-  const page = await driver.launch();
-  await onboard(page);
-  report.passed.push('Connect and select sources');
-  const helpers = { provider, refresh, createItem, restart: () => driver.restart(), dragTo: options => driver.dragTo(options),
-    screenshot: (page, name) => driver.screenshot(page, name) };
-  console.log('Drag and resize while the provider response is held');
-  await verifyPendingEdits({ page, ...helpers });
-  report.passed.push('Pending calendar edits, permission review, rejected writes and scoped TickTick requests');
-  if (!process.argv.includes('--pending-edits')) await verifyRemainingJourneys(page, helpers);
+  if (!process.argv.includes('--ticktick-requests')) {
+    const page = await driver.launch();
+    await onboard(page);
+    report.passed.push('Connect and select sources');
+    const helpers = { provider, refresh, createItem, restart: () => driver.restart(), dragTo: options => driver.dragTo(options),
+      screenshot: (page, name) => driver.screenshot(page, name) };
+    console.log('Drag and resize while the provider response is held');
+    await verifyPendingEdits({ page, ...helpers });
+    report.passed.push('Pending calendar edits, permission review, rejected writes and scoped TickTick requests');
+    if (!process.argv.includes('--pending-edits')) await verifyRemainingJourneys(page, helpers);
+  }
+  if (!process.argv.includes('--pending-edits')) {
+    console.log('TickTick request limits with 52 selected lists');
+    report.tickTickRequests = await verifyTickTickRequestJourney({ temporary, evidence });
+    report.passed.push('52 selected TickTick lists, bulk reads, cached tasks and reminders during a rate limit, independent Exchange updates and recovery',
+      'One-minute, five-minute and manual TickTick calendars after restart, scoped automatic polling and explicit refresh');
+  }
   assert.deepEqual(driver.errors, [], 'Unexpected renderer errors');
   report.status = 'passed';
 } catch (error) {

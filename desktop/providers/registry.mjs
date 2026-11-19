@@ -20,11 +20,14 @@ export function createIntegrationRegistry(integrations, options = {}) {
     async authorize(input, context) {
       return lookup(input.provider).authorize(input, context);
     },
-    client(provider, secret) {
-      return lookup(provider).client(secret);
+    client(provider, secret, options) {
+      return lookup(provider).client(secret, options);
     },
     identity(provider, secret, sources) {
       return lookup(provider).identity(secret, sources);
+    },
+    credentialIdentity(provider, secret) {
+      return lookup(provider).credentialIdentity?.(secret);
     },
     async macAccountCalendars(provider, options) {
       const integration = lookup(provider);

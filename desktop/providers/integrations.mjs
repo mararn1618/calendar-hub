@@ -10,6 +10,7 @@ import { createTickTick } from './ticktick.mjs';
 const hasId = value => typeof value === 'string' && value.trim().length > 0;
 
 function tickTickIntegration({ inBrowser, profileDirectory, testOrigin }) {
+  const tokenIdentity = ({ token }) => createHash('sha256').update(token).digest('hex');
   const authEndpoints = testOrigin && {
     registrationEndpoint: testOrigin + '/tick/oauth/register', authEndpoint: testOrigin + '/tick/oauth/authorize',
     tokenEndpoint: testOrigin + '/tick/oauth/token', issuer: testOrigin,
@@ -24,10 +25,11 @@ function tickTickIntegration({ inBrowser, profileDirectory, testOrigin }) {
         openExternal, registrationFile: join(profileDirectory, 'ticktick-oauth-client.json'), ...authEndpoints,
       }));
     },
-    client({ token, expiresAt }) {
-      return createTickTick({ token, expiresAt, ...(testOrigin && { apiBase: testOrigin + '/tick/open/v1' }) });
+    client({ token, expiresAt }, { rateLimit, onRateLimitChange, requestStats, inboxProjectId } = {}) {
+      return createTickTick({ token, expiresAt, rateLimit, onRateLimitChange, requestStats, inboxProjectId,
+        ...(testOrigin && { apiBase: testOrigin + '/tick/open/v1' }) });
     },
-    identity: ({ token }) => createHash('sha256').update(token).digest('hex'),
+    credentialIdentity: tokenIdentity, identity: tokenIdentity,
   };
 }
 

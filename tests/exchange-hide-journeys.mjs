@@ -69,7 +69,7 @@ export async function verifyExchangeAllDayHiding({ temporary, evidence }) {
     }
 
     mac.controls.calendarAccess = 'denied';
-    provider.controls.tickReadStatus = 429;
+    provider.controls.blockTickReads(5);
     await refresh(page);
     const health = await page.evaluate(async range => (await window.calendar.state({ ...range, cachedOnly: true })).health, { start: day, end });
     assert(health.some(row => row.sourceId === workId && row.state === 'stale'));

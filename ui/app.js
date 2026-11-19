@@ -21,6 +21,7 @@ let notice;
 let sequence = 0;
 let pending;
 let refreshCount = 0;
+let tickTickTimer;
 let toastTimer;
 let recheckOnReturn;
 let requestingMacAccess = false;
@@ -192,7 +193,7 @@ function macAccessButtons(access, check = refreshMacCalendars, showError = repor
 }
 
 function renderStatus() {
-  const { summary, macAccess, accounts } = syncIssues(data);
+  const { summary, macAccess, accounts, onlyTickTickPaused } = syncIssues(data);
   const latest = data.health.map(h => h.checkedAt).filter(Boolean).sort().at(-1);
   const syncing = Boolean(pending);
   const needsAttention = loadError || macAccess || summary || data.notificationError;
@@ -212,7 +213,7 @@ function renderStatus() {
   if (loadError) banners.push(banner(loadError, retry));
   if (macAccess || summary || data.notificationError) {
     const primary = macAccess?.message || summary || data.notificationError;
-    const row = banner(primary, macAccess ? undefined : retry);
+    const row = banner(primary, macAccess || (onlyTickTickPaused && !data.notificationError) ? undefined : retry);
     if (macAccess) {
       row.id = 'mac-calendar-access';
       row.append(...macAccessButtons(macAccess));
@@ -309,10 +310,19 @@ function draw() {
 }
 
 function refreshCalendars() {
-  return refresh({ force: true, refreshNotifications: true });
+  return refresh({ forceRefresh: true, refreshNotifications: true });
 }
 function refreshMacCalendars() {
   return refresh({ macOnly: true, refreshNotifications: true });
+}
+function scheduleTickTickRefresh() {
+  clearTimeout(tickTickTimer);
+  if (pending || document.hidden || !Number.isFinite(data.nextTickTickRefreshAt)) return;
+  const remaining = data.nextTickTickRefreshAt - Date.now();
+  const delay = Math.min(2_147_000_000, Math.max(loadError ? 60_000 : 250, remaining));
+  tickTickTimer = setTimeout(() => {
+    if (!pending && !document.hidden) void refresh({ tickTickOnly: true });
+  }, delay);
 }
 function showModel(result, key) {
   if (result.snapshotId < data.snapshotId) return;
@@ -329,15 +339,17 @@ function showModel(result, key) {
   renderSources();
   renderCalendar();
   panels.sync();
+  scheduleTickTickRefresh();
 }
-function refresh({ force = false, preferencesOnly = false, refreshNotifications = false, readCache = false, navigating = false, macOnly = false } = {}) {
+function refresh({ force = false, forceRefresh = false, preferencesOnly = false, refreshNotifications = false, readCache = false, navigating = false, macOnly = false, tickTickOnly = false } = {}) {
   const { start, end } = range();
   const key = rangeKey({ start, end });
   const reuseChecks = preferencesOnly && loadedRange === key && !loadError;
   if (!force && pending?.key === key && pending.serial === sequence && (!pending.reuseChecks || reuseChecks) &&
-      (!pending.macOnly || macOnly) && (!refreshNotifications || pending.refreshNotifications)) return pending.promise;
+      (!pending.macOnly || macOnly) && (!pending.tickTickOnly || tickTickOnly) &&
+      (!refreshNotifications || pending.refreshNotifications) && (!forceRefresh || pending.forceRefresh)) return pending.promise;
   const serial = ++sequence;
-  const request = { key, serial, reuseChecks, macOnly, refreshNotifications };
+  const request = { key, serial, reuseChecks, macOnly, tickTickOnly, forceRefresh, refreshNotifications };
   const current = () => serial === sequence && key === rangeKey(range());
   pending = request;
   renderStatus();
@@ -354,8 +366,8 @@ function refresh({ force = false, preferencesOnly = false, refreshNotifications 
         await new Promise(resolve => setTimeout(resolve, 65));
         if (!current()) return;
       }
-      const result = await calendarAction('state', { start, end, ...(reuseChecks && { preferencesOnly: true }),
-        ...(refreshNotifications && { refreshNotifications: true }), ...(macOnly && { macOnly: true }) });
+      const result = await calendarAction('state', { start, end, forceRefresh, ...(reuseChecks && { preferencesOnly: true }),
+        ...(refreshNotifications && { refreshNotifications: true }), ...(macOnly && { macOnly: true }), ...(tickTickOnly && { tickTickOnly: true }) });
       if (!current()) return;
       loadedRange = key;
       loadError = '';
@@ -366,7 +378,7 @@ function refresh({ force = false, preferencesOnly = false, refreshNotifications 
       loadError = errorText(error);
       draw();
     } finally {
-      if (pending === request) { pending = undefined; renderStatus(); }
+      if (pending === request) { pending = undefined; renderStatus(); scheduleTickTickRefresh(); }
     }
   })();
   return request.promise;
@@ -416,7 +428,7 @@ async function mutate(method, payload) {
     if (failure) throw failure;
     return;
   }
-  const preferencesOnly = method === 'setCalendarNotifications' || method === 'setCalendarColor' ||
+  const preferencesOnly = method === 'setCalendarNotifications' || method === 'setCalendarColor' || method === 'setTickTickSyncInterval' ||
     (!failure && (method === 'configureTickTick' || method === 'setTickTickCalendarVisible' || method === 'renameConnection'));
   while (preferencesOnly && pending && !pending.reuseChecks && pending.serial === sequence) await pending.promise;
   const macConnect = method === 'connect' && (payload.provider === 'mac' || payload.route === 'mac');
@@ -536,11 +548,13 @@ function resume() {
 window.addEventListener('blur', () => { foreground = false; });
 window.addEventListener('focus', resume);
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) foreground = false;
+  if (document.hidden) { foreground = false; clearTimeout(tickTickTimer); }
   else resume();
 });
 setInterval(updateClock, 15000);
-setInterval(() => { if (!document.hidden) void refresh(); }, 5 * 60000);
+setInterval(() => {
+  if (!document.hidden && data.connections.some(connection => connection.provider !== 'ticktick')) void refresh();
+}, 5 * 60000);
 renderDayCount();
 draw();
 void refresh();

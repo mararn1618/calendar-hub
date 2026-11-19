@@ -19,6 +19,11 @@ function horizon(now) {
   return end.getTime();
 }
 
+function reminderDates(now, leadMinutes) {
+  const offset = leadMinutes * minute;
+  return { start: localDay(now + offset), end: localDay(horizon(now) + offset - 1, 1) };
+}
+
 function inCurrentMode(connection, id) {
   const [account, kind, groupId] = JSON.parse(id);
   if (account !== connection.id) return false;
@@ -78,14 +83,22 @@ export class CalendarNotifications {
     return Object.fromEntries(this.service.displayCalendars().map(({ id }) => [id, this.data.notificationPreferences?.[id] ?? defaults]));
   }
 
-  observeTickTickItems(source, items) {
-    if (source.provider !== 'ticktick' || !items.length || !Object.entries(this.data.notificationPreferences ?? {})
-      .some(([id, preference]) => preference.enabled && JSON.parse(id)[0] === source.connectionId)) return;
-    const ids = new Set(items.map(item => item.id));
-    for (const [id, cache] of Object.entries(this.data.cache)) {
-      if (id === source.id || JSON.parse(id)[0] !== source.connectionId) continue;
-      for (const previous of cache.items) if (ids.has(previous.id)) previous.movedToSourceId = source.id;
+  nextTickTickCheckAt() {
+    if (this.authorization !== 'allowed') return null;
+    const now = Date.now();
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    let due = Infinity;
+    for (const connection of this.data.connections.filter(row => row.provider === 'ticktick')) {
+      for (const source of this.service.connectionSources(connection.id)) {
+        const reminder = this.data.notificationPreferences?.[source.calendarId];
+        if (!source.included || !reminder?.enabled || !this.service.syncMinutes(source.calendarId)) continue;
+        const period = reminderDates(now, reminder.leadMinutes);
+        const deadline = connection.tickTickRateLimit?.retryAt > now ? connection.tickTickRateLimit.retryAt :
+          this.service.tickTickSourceCheckAt(source, { ...period, zone }, now);
+        due = Math.min(due, deadline);
+      }
     }
+    return Number.isFinite(due) ? Math.max(now, due) : null;
   }
 
   async set({ calendarId, enabled, leadMinutes }) {
@@ -127,7 +140,8 @@ export class CalendarNotifications {
     this.lastApplied = serialized;
   }
 
-  async refresh({ read = 'all', calendarId, discover = false, authorized = false, checkedRange, writtenItems, macOnly = false } = {}) {
+  async refresh({ read = 'all', calendarId, discover = false, authorized = false, checkedRange, writtenItems,
+    macOnly = false, tickTickOnly = false, tickTickReads, forceRefresh = false } = {}) {
     const enabled = Object.keys(this.data.notificationPreferences ?? {}).filter(id => this.data.notificationPreferences[id].enabled);
     const accounts = enabled.length ? this.data.connections.filter(connection => enabled.some(id => inCurrentMode(connection, id))) : [];
     try {
@@ -140,6 +154,7 @@ export class CalendarNotifications {
       }
       if (authorized) this.authorization = 'allowed';
       else if (read === 'all' || !this.authorization || read !== 'none' && this.authorization !== 'allowed') {
+        this.authorization = null;
         this.authorization = await this.center?.authorization();
       }
       if (this.authorization !== 'allowed') {
@@ -148,19 +163,28 @@ export class CalendarNotifications {
         this.error = this.authorization === 'unavailable' || !this.authorization ? unavailable : denied;
         return;
       }
-      const accountsToRead = macOnly ? accounts.filter(usesMacCalendars) : accounts;
+      const accountsToRead = tickTickOnly ? accounts.filter(connection => connection.provider === 'ticktick') :
+        macOnly ? accounts.filter(usesMacCalendars) : accounts;
+      const discoveryFailures = new Map();
       if (discover) {
         await Promise.all(accountsToRead.map(async connection => {
           try {
-            this.service.updateSources(connection, await this.service.client(connection).sources());
+            const automatic = enabled.some(id => inCurrentMode(connection, id) && this.service.syncMinutes(id) > 0);
+            await this.service.discoverSources(connection, false, automatic);
             this.failures.delete(connection.id);
-          } catch (error) { this.failures.set(connection.id, failedCheck(connection.id, error)); }
+          } catch (error) {
+            discoveryFailures.set(connection.id, error);
+            this.failures.set(connection.id, failedCheck(connection.id, error));
+          }
         }));
         this.service.profile.save();
       } else if (checkedRange) {
         for (const connection of accountsToRead) {
           const failure = checkedRange.health.find(entry => entry.connectionId === connection.id && !entry.sourceId);
-          if (failure) this.failures.set(connection.id, failure);
+          if (failure) {
+            this.failures.set(connection.id, failure);
+            discoveryFailures.set(connection.id, failure);
+          }
           else this.failures.delete(connection.id);
         }
       }
@@ -174,11 +198,11 @@ export class CalendarNotifications {
         const accountIds = new Set(accountsToRead.map(connection => connection.id));
         const routesToRead = routes.filter(route => accountIds.has(route.source.connectionId) &&
           (read !== 'calendar' || route.calendarId === calendarId));
-        await this.load(routesToRead, accountsToRead, read, checkedRange, writtenItems);
+        await this.load(routesToRead, accountsToRead, read, checkedRange, { writtenItems, tickTickReads, forceRefresh, discoveryFailures });
       }
       this.leads = new Map(routes.map(route => [route.source.id, route.leadMinutes]));
       const requests = requestsFor(routes, this.data.cache, Date.now());
-      await this.replace(requests, read === 'all');
+      await this.replace(requests, read === 'all' && !tickTickOnly);
       this.error = reminderWarning(this.failures, routes);
     } catch (error) {
       this.lastApplied = null;
@@ -186,15 +210,15 @@ export class CalendarNotifications {
     }
   }
 
-  async load(routes, accounts, read, checkedRange, writtenItems) {
-    const now = Date.now(), until = horizon(now);
+  async load(routes, accounts, read, checkedRange, { writtenItems, tickTickReads, forceRefresh, discoveryFailures }) {
+    const now = Date.now();
     const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const jobs = [];
     for (const route of routes) {
       const { source, leadMinutes } = route;
+      if (source.provider === 'ticktick' && read !== 'calendar' && !forceRefresh && !this.service.syncMinutes(route.calendarId)) continue;
       if (read === 'changed' && this.leads.get(source.id) === leadMinutes) continue;
-      const offset = leadMinutes * minute;
-      const start = localDay(now + offset), end = localDay(until + offset - 1, 1);
+      const { start, end } = reminderDates(now, leadMinutes);
       if (checkedRange && checkedRange.start <= start && checkedRange.end >= end) {
         const check = checkedRange.health.find(entry => entry.sourceId === source.id);
         if (check) {
@@ -202,9 +226,8 @@ export class CalendarNotifications {
           continue;
         }
       }
-      const recent = this.data.cache[source.id]?.checks.some(check => check.zone === zone && check.start <= start &&
-        check.end >= end && now - Date.parse(check.checkedAt) < 5 * minute);
-      if (read === 'changed' && recent) continue;
+      if (read === 'changed' && source.provider !== 'ticktick' && this.data.cache[source.id]?.checks.some(check =>
+        check.zone === zone && check.start <= start && check.end >= end && now - Date.parse(check.checkedAt) < 5 * minute)) continue;
       jobs.push({ source, start, end, zone, writtenItems });
     }
     if (!jobs.length) return;
@@ -212,8 +235,18 @@ export class CalendarNotifications {
       const remaining = jobs.filter(job => job.source.connectionId === connection.id);
       if (!remaining.length) return;
       let client;
-      try { client = this.service.client(connection); }
-      catch (error) { this.failures.set(connection.id, failedCheck(connection.id, error)); }
+      let failure = discoveryFailures.get(connection.id);
+      const force = forceRefresh || read === 'calendar';
+      try { client = this.service.clientForReads(connection, remaining, force); }
+      catch (error) {
+        failure = error;
+        this.failures.set(connection.id, failedCheck(connection.id, error));
+      }
+      if (connection.provider === 'ticktick' && (client?.itemsForSources || !client)) {
+        const checks = await this.service.refreshTickTickRanges(connection, client, remaining, { tickTickReads, writtenItems, forceRefresh: force, failure });
+        for (const job of remaining) this.rememberCheck(job.source, checks.get(job.source.id));
+        return;
+      }
       const iterator = remaining.values();
       const worker = async () => {
         for (const job of iterator) {

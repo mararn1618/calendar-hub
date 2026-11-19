@@ -316,6 +316,9 @@ dialog::backdrop { background: #00000040; }
 .sync-issue-sources li { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; border-bottom: 1px solid var(--line-soft); }
 .sync-issue-sources li > span:first-child { overflow-wrap: anywhere; }
 .sync-issue-sources .help { flex: none; }
+.sync-activity summary { cursor: pointer; font-weight: 600; }
+.sync-activity table { width: 100%; margin-top: 6px; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.sync-activity td, .sync-activity th { padding: 3px 6px; text-align: left; border-bottom: 1px solid var(--line-soft); }
 .appearance-settings { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .appearance-options { display: flex; align-items: center; gap: 12px; }
 .appearance-options label { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; cursor: pointer; }
@@ -332,6 +335,8 @@ dialog::backdrop { background: #00000040; }
 .settings-source .source-toggle:hover { background: none; }
 .settings-source .i-lock { margin-left: 0; }
 .settings-source .readonly-control { gap: 6px; font-size: 11px; color: var(--muted); }
+.sync-interval { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
+.sync-interval select { min-height: 26px; padding: 2px 3px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: var(--subtle); font: inherit; }
 .notification-settings { gap: 5px; padding: 2px 5px; min-height: 26px; font-size: 11px; font-weight: 500; color: var(--accent-dark); background: var(--subtle); border: 1px solid var(--line); }
 .notification-settings .i-bell { transform: scale(.86); }
 .settings-list-filter { display: flex; align-items: center; justify-content: space-between; padding: 3px 10px; border-top: 1px solid var(--line-soft); }

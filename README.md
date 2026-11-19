@@ -1,6 +1,6 @@
 # Calendar Hub
 
-**[Download Calendar Hub 0.6.0 for Mac](https://github.com/mararn1618/calendar-hub/releases/download/v0.6.0/Calendar-Hub-0.6.0-arm64.dmg)** · [All releases and previews](https://github.com/mararn1618/calendar-hub/releases)
+**[Download Calendar Hub 0.6.1 for Mac](https://github.com/mararn1618/calendar-hub/releases/download/v0.6.1/Calendar-Hub-0.6.1-arm64.dmg)** · [All releases and previews](https://github.com/mararn1618/calendar-hub/releases)
 
 A Mac calendar for TickTick tasks, Google appointments and read-only work meetings. Use Day, a Monday-to-Sunday Week or a rolling view of 1 to 31 days.
 
@@ -25,8 +25,6 @@ The rolling view shows your chosen length, for example **Next 5 Days**. When you
 Drag from the start time to the end time on an empty part of the calendar. The preview snaps to 15 minutes. Release, enter a title, choose a Google calendar and press **Save**. You can drag across midnight or across several dates in the all-day row. **Escape** cancels the selection. Use **New item** to create a TickTick task or enter an appointment using the keyboard.
 
 Drag an existing task or appointment to move it. Drag its top or bottom edge to resize it. The entry stays at the time you chose and looks muted until the provider confirms. A rejected edit returns to the saved time. If the connection drops before the outcome is known, open **Review writes** to check the item.
-
-If TickTick limits requests, Calendar Hub shows one warning and retries automatically. Open **Sync details** to see which lists are affected and when they were last checked.
 
 ## Run on this Mac
 
@@ -62,6 +60,14 @@ Open **Manage calendars → Edit lists**. Folders and loose lists follow their o
 - **One calendar** gives the account one checkbox in the sidebar. Turning it off and on remembers your list selection.
 - **By folder** gives each folder a calendar and collects Inbox and loose lists together.
 - **Custom calendars** lets you name calendars and combine lists from different folders. Each included list belongs to one calendar. New tasks still go to the TickTick list you choose when creating them.
+
+### Choose when to update
+
+Calendar Hub checks visible TickTick calendars every **5 minutes** by default. In **Manage calendars**, use **Sync** beside each TickTick calendar to choose 1, 2, 5, 10, 15, 30 or 60 minutes, or **Manual**. For example, set Work to 1 minute and Archive to Manual. The setting also applies to that calendar's enabled reminders.
+
+Edits made in Calendar Hub save immediately. For changes made in TickTick, click **Refresh** to check now. In Manual mode, opening a new date range loads it once. Click Refresh to update dates you have already loaded. Reopening a recently checked week uses the saved tasks. TickTick publishes a bulk task lookup by date. Its public API has no documented push notification for task changes. [TickTick Open API](https://developer.ticktick.com/docs/openapi.md)
+
+If TickTick asks Calendar Hub to slow down, saved tasks stay visible. The notice shows when that account can be checked again. Other accounts keep updating. Open **Manage calendars → Sync details** to see how many requests each TickTick account has made on this Mac.
 
 ## Calendar notifications
 

@@ -99,9 +99,31 @@ if (!app.requestSingleInstanceLock()) {
     });
     registry.notificationCenter = testOrigin ? fixtureNotificationCenter(testOrigin) : createMacNotificationCenter();
     const service = new CalendarService(new Profile(profileDirectory, safeStorage), registry);
+    let notificationTimer, notificationRefresh;
+    let nextFullCheck = Date.now();
+    let quitting = false;
+    function scheduleNotificationCheck() {
+      clearTimeout(notificationTimer);
+      if (quitting || notificationRefresh) return;
+      const tickTickCheck = service.nextTickTickNotificationCheckAt();
+      const next = Math.min(nextFullCheck, tickTickCheck ?? Infinity);
+      notificationTimer = setTimeout(() => refreshNotifications(Date.now() < nextFullCheck), Math.max(250, next - Date.now()));
+      notificationTimer.unref();
+    }
+    function refreshNotifications(tickTickOnly = false) {
+      if (notificationRefresh) return;
+      if (!tickTickOnly) nextFullCheck = Date.now() + 5 * 60_000;
+      notificationRefresh = service.run('refreshNotifications', { tickTickOnly })
+        .catch(error => console.warn('Calendar notification refresh failed.', error.message))
+        .finally(() => { notificationRefresh = undefined; scheduleNotificationCheck(); });
+    }
+    function resumeNotifications() {
+      nextFullCheck = Date.now();
+      refreshNotifications();
+    }
     for (const action of ['state', 'setAppearance', 'connect', 'renameConnection', 'macAccountCalendars', 'macGoogleCalendars', 'openInternetAccounts',
       'openCalendarPrivacy', 'requestCalendarAccess', 'disconnect', 'setSource',
-      'configureTickTick', 'setTickTickCalendarVisible', 'setCalendarColor', 'setCalendarNotifications', 'save', 'complete', 'remove', 'hide', 'restore', 'acknowledge']) {
+      'configureTickTick', 'setTickTickCalendarVisible', 'setTickTickSyncInterval', 'setCalendarColor', 'setCalendarNotifications', 'save', 'complete', 'remove', 'hide', 'restore', 'acknowledge']) {
       ipcMain.handle('calendar:' + action, async (event, input) => {
         if (event.sender !== mainWindow?.webContents || event.senderFrame !== mainWindow.webContents.mainFrame
           || event.senderFrame.url !== pathToFileURL(index).href) throw new Error('Unknown calendar window.');
@@ -133,25 +155,20 @@ if (!app.requestSingleInstanceLock()) {
             await macCalendar({ provider: 'mac' }).authorize();
             return { ok: true };
           }
-          return { ok: true, value: await service.run(action, input) };
+          const value = await service.run(action, input);
+          if (action !== 'state' || !input?.cachedOnly) scheduleNotificationCheck();
+          return { ok: true, value };
         }
         catch (error) { return { ok: false, message: error.message, code: error.code }; }
       });
     }
     await openWindow();
-    let notificationRefresh;
-    function refreshNotifications() {
-      notificationRefresh ??= service.run('refreshNotifications')
-        .catch(error => console.warn('Calendar notification refresh failed.', error.message))
-        .finally(() => { notificationRefresh = undefined; });
-    }
     refreshNotifications();
-    const timer = setInterval(refreshNotifications, 5 * 60_000);
-    timer.unref();
-    powerMonitor.on('resume', refreshNotifications);
+    powerMonitor.on('resume', resumeNotifications);
     app.once('will-quit', () => {
-      clearInterval(timer);
-      powerMonitor.off('resume', refreshNotifications);
+      quitting = true;
+      clearTimeout(notificationTimer);
+      powerMonitor.off('resume', resumeNotifications);
     });
     app.on('activate', () => { if (!mainWindow) void openWindow(); });
   }).catch(error => { dialog.showErrorBox('Calendar Hub could not start', error.message); app.quit(); });

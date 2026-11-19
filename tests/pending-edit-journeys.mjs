@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { until } from './desktop-driver.mjs';
 import { textContrast } from './calendar-color-journeys.mjs';
+import { isProviderRead } from './provider-server.mjs';
 
 const studio = 'studio@example.test';
 const tickPath = 'task/timed';
@@ -71,9 +72,12 @@ export async function withHeldWrite(controls, matches, action, whileHeld, reject
 }
 
 function assertScopedTickReads(requests) {
-  const reads = requests.filter(call => call.provider === 'ticktick' && call.method === 'GET');
-  assert.deepEqual(reads.map(call => call.path).filter(path => !['project/planning/task/timed', 'project/planning/data'].includes(path)), [],
-    'Saving one TickTick task fetched unrelated lists or metadata.');
+  const reads = requests.filter(call => call.provider === 'ticktick' && isProviderRead(call));
+  for (const call of reads) {
+    if (call.path === 'task/undone') assert.deepEqual(call.range.projectIds, ['planning']);
+    else assert(['project/planning/task/timed', 'project/planning/data'].includes(call.path),
+      'Saving one TickTick task fetched unrelated lists or metadata: ' + call.path);
+  }
 }
 
 export async function verifyPendingEdits({ page, provider, refresh, dragTo, screenshot }) {

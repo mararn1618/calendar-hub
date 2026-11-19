@@ -18,10 +18,10 @@ function response(value, status = 200) {
   return new Response(value == null ? null : JSON.stringify(value), { status })
 }
 
-function api(handle) {
+function api(handle, options = {}) {
   const calls = []
   const client = createTickTick({
-    token: 'fixture', apiBase: 'https://example.invalid/open/v1/', timeZone: zone,
+    token: 'fixture', apiBase: 'https://example.invalid/open/v1/', timeZone: zone, ...options,
     fetchImpl: async (uri, options) => {
       const url = new URL(uri)
       const path = url.pathname.slice('/open/v1'.length)
@@ -183,7 +183,7 @@ test('searches long Inbox ranges without gaps, deduplicates tasks and completes 
   })
   const result = await client.items(inbox, '2026-10-20', '2026-11-22')
   assert.equal(result.length, 1)
-  let cursor = Date.parse('2026-10-20T00:00:00+02:00')
+  let cursor = Date.parse('2026-10-19T10:00:00Z')
   for (const { body } of calls) {
     assert.deepEqual(body.projectIds, ['inbox'])
     assert.equal(Date.parse(body.startDate), cursor)
@@ -191,10 +191,157 @@ test('searches long Inbox ranges without gaps, deduplicates tasks and completes 
     assert(next > cursor && next - cursor <= 14 * 86400000)
     cursor = next
   }
-  assert.equal(cursor, Date.parse('2026-11-22T00:00:00+01:00'))
+  assert.equal(cursor, Date.parse('2026-11-22T12:00:00Z'))
   const completed = await client.complete(inbox, result[0])
   assert.equal(completed.id, 'task1')
   assert.equal(completed.completed, true)
+})
+
+test('a mixed dated read matches list calendars for timed, due-only, spanning, repeating and all-day tasks', async () => {
+  const privateInbox = 'inbox123'
+  const shared = { id: 'shared', writable: false }
+  const empty = { id: 'empty', writable: true }
+  const tasks = [
+    original, { ...original, projectId: privateInbox }, { ...original, projectId: shared.id },
+    { ...original, id: 'repeat', repeatFlag: 'RRULE:FREQ=WEEKLY' },
+    { ...original, id: 'all-day-span', startDate: '2026-10-19', dueDate: '2026-10-27' },
+    { ...original, id: 'timed-span', isAllDay: false, startDate: '2026-10-24T10:00:00', dueDate: '2026-10-28T10:30:00' },
+    { ...original, id: 'first-0230', isAllDay: false, dueDate: '2026-10-25T02:30:00+0200' },
+    { ...original, id: 'second-0230', isAllDay: false, dueDate: '2026-10-25T02:30:00+0100' },
+    { ...original, id: 'eastern-point', isAllDay: false, timeZone: 'America/New_York', dueDate: '2026-10-24T20:00:00' },
+    { ...original, id: 'ends-at-start', isAllDay: false, startDate: '2026-10-19T05:00:00Z', dueDate: '2026-10-25T00:00:00+0200' },
+    { ...original, id: 'point-at-end', isAllDay: false, dueDate: '2026-10-26T00:00:00+0100' },
+    { ...original, id: 'tomorrow', dueDate: '2026-10-26' }, { ...original, id: 'undated', dueDate: null },
+    { ...original, id: 'completed', status: 2 }, { ...original, id: 'abandoned', status: -1 }, { ...original, id: 'note', kind: 'NOTE' },
+  ]
+  const { client, calls } = api(({ path, body }) => {
+    if (path === '/task/undone') return response(tasks.filter(task => body.projectIds.includes(task.projectId === privateInbox ? 'inbox' : task.projectId)))
+    const project = path.match(/^\/project\/([^/]+)\/data$/)[1]
+    return response({ tasks: tasks.filter(task => task.projectId === project) })
+  }, { inboxProjectId: privateInbox })
+  const sources = [source, shared, inbox, empty]
+  const mixed = await client.itemsForSources(sources, day.start, day.end)
+  assert.deepEqual(calls.map(call => [call.path, call.method, call.body]), [[
+    '/task/undone', 'POST', { projectIds: ['personal', 'shared', 'inbox', 'empty'],
+      startDate: '2026-10-24T10:00:00+0000', endDate: '2026-10-26T11:59:59.999+0000' },
+  ]])
+  for (const list of sources) assert.deepEqual(mixed.get(list.id), await client.items(list, day.start, day.end))
+  assert.deepEqual(mixed.get(source.id).map(task => task.id),
+    ['task1', 'repeat', 'all-day-span', 'timed-span', 'first-0230', 'second-0230', 'eastern-point'])
+  assert.equal(mixed.get('inbox')[0]._ticktick.projectId, privateInbox)
+  assert.equal(mixed.get(shared.id)[0].canComplete, false)
+  assert.equal(mixed.get(source.id).find(task => task.recurring).canEdit, false)
+  assert.deepEqual(mixed.get(empty.id), [])
+})
+
+test('dated queries split at civil and elapsed 14-day limits across both clock changes without gaps or duplicate tasks', async () => {
+  for (const [first, last, startDay, endDay] of [
+    ['2026-03-19T10:00:00Z', '2026-04-22T12:00:00Z', '2026-03-20', '2026-04-22'],
+    ['2026-10-19T10:00:00Z', '2026-11-22T12:00:00Z', '2026-10-20', '2026-11-22'],
+  ]) {
+    const task = { ...original, startDate: startDay, dueDate: endDay }
+    const published = { ...inbox, id: 'inbox47' }
+    const { client, calls } = api(() => response([task, task, { ...task, projectId: published.id }]))
+    const result = await client.itemsForSources([source, published], startDay, endDay)
+    assert.deepEqual(result.get(source.id).map(task => task.id), [task.id])
+    assert.deepEqual(result.get(published.id).map(task => task.id), [task.id])
+    assert.equal(calls.length, 3)
+    let cursor = Date.parse(first)
+    for (const { path, body } of calls) {
+      assert.equal(path, '/task/undone')
+      assert.deepEqual(body.projectIds, [source.id, 'inbox'])
+      assert.equal(Date.parse(body.startDate), cursor)
+      const next = Date.parse(body.endDate) + 1
+      assert(next > cursor && next - cursor <= 14 * 86400000)
+      assert(Date.parse(body.endDate.slice(0, 10)) - Date.parse(body.startDate.slice(0, 10)) < 14 * 86400000)
+      cursor = next
+    }
+    assert.equal(cursor, Date.parse(last))
+  }
+})
+
+test('instant-filtered dated reads keep all-day tasks from both extreme time zones on the first and last visible days across DST', async () => {
+  for (const [start, lastDay, end] of [
+    ['2026-03-23', '2026-04-03', '2026-04-04'], ['2026-10-19', '2026-10-30', '2026-10-31'],
+  ]) {
+    const first = { ...original, id: 'first-local-day', timeZone: 'Pacific/Kiritimati', dueDate: start + 'T00:00:00+1400' }
+    const last = { ...original, id: 'last-local-day', timeZone: 'Etc/GMT+12', dueDate: lastDay + 'T23:59:59.999-1200' }
+    const outside = { ...first, id: 'next-local-day', dueDate: end + 'T00:00:00+1400' }
+    const timed = { ...last, id: 'after-view', isAllDay: false }
+    const rows = [first, last, outside, timed]
+    const { client, calls } = api(({ body }) => {
+      const from = Date.parse(body.startDate), until = Date.parse(body.endDate)
+      return response(rows.filter(task => Date.parse(task.dueDate) >= from && Date.parse(task.dueDate) <= until))
+    })
+    const tasks = (await client.itemsForSources([source], start, end)).get(source.id)
+    assert.deepEqual(tasks.map(task => [task.id, task.start]), [[first.id, start], [last.id, lastDay]])
+    assert.equal(tasks[1].end, end)
+    assert.equal(calls.length, 1)
+  }
+})
+
+test('a single dated read keeps every returned task from a large list selection', async () => {
+  const sources = Array.from({ length: 52 }, (_, i) => ({ id: 'list-' + i, writable: true }))
+  const rows = sources.flatMap(source => Array.from({ length: 8 }, (_, i) =>
+    ({ ...original, id: source.id + '-task-' + i, projectId: source.id })))
+  const { client, calls } = api(() => response(rows))
+  const result = await client.itemsForSources(sources, day.start, day.end)
+  assert.deepEqual(calls.map(call => call.body.projectIds), [sources.map(source => source.id)])
+  for (const source of sources) assert.deepEqual(result.get(source.id).map(task => task.id),
+    rows.filter(task => task.projectId === source.id).map(task => task.id))
+})
+
+test('a cold mixed query verifies one task inside Inbox before accepting its private ID', async () => {
+  const first = { ...original, projectId: 'private-inbox' }
+  const second = { ...first, id: 'other-task' }
+  const { client, calls } = api(({ body }) => {
+    if (body.taskIds) return response([second])
+    return response([original, first, second])
+  })
+  const result = await client.itemsForSources([source, inbox], day.start, day.end)
+  assert.deepEqual(result.get(inbox.id).map(task => task.id), [first.id, second.id])
+  assert.deepEqual(calls.map(call => [call.body.projectIds, call.body.taskIds]), [
+    [['personal', 'inbox'], undefined], [['inbox'], [second.id]],
+  ])
+  assert.equal(await client.accountInboxId(day.start), 'private-inbox')
+  await client.itemsForSources([source, inbox], day.start, day.end)
+  assert.equal(calls.length, 3)
+})
+
+test('incomplete or foreign dated results reject the entire batch without adopting an Inbox or falling back to whole lists', async () => {
+  const privateInbox = { ...original, projectId: 'unverified' }
+  const selected = [source, inbox]
+  for (const invalid of [null, { tasks: [original] }, [null], [{ ...original, id: '' }], [{ ...original, projectId: null }],
+    [{ ...original, title: {} }], [{ ...original, dueDate: '2026-02-30' }], [{ ...original, projectId: 'other-list' }],
+    [{ ...original, status: '0' }], [{ ...original, dueDate: false }], [{ ...original, isAllDay: 'true' }]]) {
+    let page = 0
+    const { client, calls } = api(({ path, body }) => {
+      assert.equal(path, '/task/undone')
+      if (body.taskIds) return response([privateInbox])
+      if (body.projectIds.length === 1) return response([{ ...original, projectId: 'inbox84' }])
+      return response(++page === 1 ? [original, privateInbox] : invalid)
+    })
+    await assert.rejects(client.itemsForSources(selected, '2026-10-20', '2026-11-22'))
+    assert.equal(await client.accountInboxId(day.start), 'inbox84')
+    assert.equal(calls.length, 4)
+  }
+  for (const proof of [[], [original], [{ ...privateInbox, id: 'different' }], [privateInbox, privateInbox]]) {
+    const { client, calls } = api(({ body }) => response(body.taskIds ? proof : [original, privateInbox]))
+    await assert.rejects(client.itemsForSources(selected, day.start, day.end), /could not confirm/)
+    assert.equal(calls.length, 2)
+  }
+  const foreign = api(() => response([privateInbox]), { inboxProjectId: 'inbox123' })
+  for (const sources of [selected, [source]]) {
+    await assert.rejects(foreign.client.itemsForSources(sources, day.start, day.end), /unexpected list/)
+  }
+  assert.equal(foreign.calls.length, 2)
+  assert.deepEqual(await foreign.client.itemsForSources([], day.start, day.end), new Map())
+  assert.equal(foreign.calls.length, 2)
+  for (const status of [202, 206]) {
+    const partial = api(() => response([original], status))
+    await assert.rejects(partial.client.itemsForSources([source], day.start, day.end), { code: 'PROVIDER_ERROR', status })
+    assert.equal(partial.calls.length, 1)
+  }
 })
 
 test('account identity uses a published private Inbox or queries only that local day', async () => {
@@ -393,7 +540,7 @@ test('a stale list version rejects the drag and returns the checked task without
   let detail = { ...original, title: 'Updated in TickTick', etag: 'from-detail' }
   const { client, calls } = api(({ path, method, body }) => {
     if (path === '/project') return response([source])
-    if (path === '/task/undone') return response([])
+    if (path === '/task/undone') return response(body.projectIds.includes(source.id) ? [summary] : [])
     if (path.endsWith('/data')) return response({ tasks: [summary] })
     if (method === 'GET') return response(detail)
     detail = { ...body, etag: 'saved' }

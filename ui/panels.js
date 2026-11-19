@@ -4,13 +4,19 @@ import { showMacAccountPicker, showRetainedCalendars } from './mac-account-picke
 import { createTickTickEditor } from './ticktick-editor.js';
 import { listCount, tickTickSections } from './ticktick-lists.js';
 import { appearanceSettings } from './appearance.js';
-import { macCalendarAccess, syncIssues } from './sync-issues.js';
+import { macCalendarAccess, retryTimeLabel, syncIssues } from './sync-issues.js';
 import { calendarAction } from './calendar-client.js';
 
 const dateFormat = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' };
 const asISO = value => new Date(value).toISOString();
 const itemKey = item => ({ sourceId: item.sourceId, id: item.id, version: item.version });
 const defaultNotifications = { enabled: false, leadMinutes: 10 };
+const requestNames = {
+  lists: 'Lists', folders: 'Folders', datedTasks: 'Tasks by date', list: 'List details',
+  listTasks: 'Tasks in one list', task: 'Task details', createTask: 'Create task',
+  updateTask: 'Edit task', completeTask: 'Complete task', completeInboxTask: 'Complete Inbox task'
+};
+const activityTime = new Intl.DateTimeFormat('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 function timingLabel(minutes) {
   if (minutes === 0) return 'At start';
@@ -200,15 +206,18 @@ export function createPanels(actions) {
   });
 
   function syncDetails() {
-    const scroll = dialog.open && kind === 'sync-details' ? body.scrollTop : 0;
+    const previous = dialog.open && kind === 'sync-details' ? body : null;
+    const scroll = previous?.scrollTop || 0;
+    const expanded = new Set(Array.from(previous?.querySelectorAll('details[open]') || [], row => row.dataset.account));
     const model = state();
     const sources = new Map(model.sources.map(source => [source.id, source]));
     const { accounts } = syncIssues(model);
     panel('sync-details', 'Sync details', { wide: true });
     if (!accounts.length) body.append(element('p', 'help', 'No current sync errors.'));
-    for (const { label, tickTick, entries } of accounts) {
+    for (const { label, tickTick, entries, retryAt } of accounts) {
       const section = element('section', 'sync-issue-account');
       section.append(element('h3', 'settings-subhead', label));
+      if (retryAt) section.append(element('p', 'help', 'Updates paused until ' + retryTimeLabel(retryAt) + '.'));
       for (const [reason, affected] of Map.groupBy(entries, entry => {
         const reason = entry.message || 'Could not refresh.';
         return entry.status && !reason.includes('HTTP ' + entry.status) ? reason + ' (HTTP ' + entry.status + ')' : reason;
@@ -227,8 +236,58 @@ export function createPanels(actions) {
       }
       body.append(section);
     }
+    for (const connection of model.connections.filter(connection => connection.provider === 'ticktick')) {
+      const activity = Object.entries(connection.tickTickRequestStats || {});
+      if (!activity.length) continue;
+      const details = element('details', 'sync-activity');
+      details.dataset.account = connection.id;
+      details.open = expanded.has(connection.id);
+      const total = activity.reduce((sum, [, record]) => sum + record.count, 0);
+      details.append(element('summary', '', accountLabel(connection, model.connections) + ' · ' + total + (total === 1 ? ' API request' : ' API requests')));
+      const table = element('table');
+      table.setAttribute('aria-label', 'TickTick request activity');
+      const heading = table.createTHead().insertRow();
+      for (const name of ['Request', 'Count', 'Last request', 'Result']) {
+        const cell = element('th', '', name);
+        cell.scope = 'col';
+        heading.append(cell);
+      }
+      const rows = table.createTBody();
+      for (const [key, entry] of activity) {
+        const row = rows.insertRow();
+        const lastRequest = Number.isFinite(entry.lastAt) ? activityTime.format(entry.lastAt) : 'Unknown';
+        for (const value of [requestNames[key], entry.count, lastRequest, entry.lastStatus || 'No response']) {
+          row.insertCell().textContent = value;
+        }
+        if (entry.lastLimitedAt) {
+          const lastLimited = rows.insertRow().insertCell();
+          lastLimited.colSpan = 4;
+          lastLimited.className = 'help';
+          lastLimited.textContent = 'Last rate limit ' + activityTime.format(entry.lastLimitedAt) +
+            ' · Paused until ' + activityTime.format(entry.lastRetryAt);
+        }
+      }
+      details.append(table);
+      body.append(details);
+    }
     footer.append(button('Done', close, 'primary'));
     body.scrollTop = scroll;
+  }
+
+  function tickTickSyncControl(calendar) {
+    const label = element('label', 'sync-interval', 'Sync');
+    const select = element('select');
+    select.id = 'sync-interval-' + encodeURIComponent(calendar.id);
+    select.setAttribute('aria-label', 'Sync interval for ' + calendar.name);
+    for (const minutes of state().connectionOptions.tickTickSyncIntervals) {
+      select.add(new Option(minutes ? minutes + ' min' : 'Manual', String(minutes)));
+    }
+    select.value = String(calendar.syncMinutes);
+    select.addEventListener('change', () => write('setTickTickSyncInterval', {
+      calendarId: calendar.id, minutes: Number(select.value)
+    }, settings, text => { settings(); warning(text); }));
+    label.append(select);
+    return label;
   }
 
   function settings() {
@@ -288,7 +347,7 @@ export function createPanels(actions) {
               settings();
               warning(text);
             });
-          }, health), notificationSettingsButton(calendar));
+          }, health), tickTickSyncControl(calendar), notificationSettingsButton(calendar));
           group.append(row);
         }
         const filter = element('div', 'settings-list-filter');
@@ -319,7 +378,9 @@ export function createPanels(actions) {
       }
       body.append(group);
     }
-    footer.append(button('Hidden items', hiddenItems, 'text-button'), button('Done', close, 'primary'));
+    footer.append(button('Hidden items', hiddenItems, 'text-button'));
+    if (ticktickCalendars.length) footer.append(button('Sync details', syncDetails, 'text-button'));
+    footer.append(button('Done', close, 'primary'));
     body.scrollTop = scroll;
     if (focused) document.getElementById(focused)?.focus({ preventScroll: true });
   }

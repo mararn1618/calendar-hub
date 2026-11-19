@@ -3,6 +3,7 @@ import test from 'node:test';
 import { CalendarService } from '../desktop/calendar-service.mjs';
 import { createDesktopRegistry } from '../desktop/providers/integrations.mjs';
 import { createIntegrationRegistry } from '../desktop/providers/registry.mjs';
+import { startProviderServer } from './provider-server.mjs';
 
 const period = { start: '2026-11-19', end: '2026-11-20' };
 const key = (account, id) => JSON.stringify([account, id]);
@@ -17,6 +18,35 @@ function memoryProfile() {
     seal: value => structuredClone(value), open: row => structuredClone(row.secret), save() {},
   };
 }
+
+test('a rate-limited first TickTick connection keeps its deadline across retries and restarts', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const provider = await startProviderServer({ multipleAccounts: true });
+  t.after(() => provider.close());
+  const registry = createDesktopRegistry({ testOrigin: provider.origin });
+  const profile = memoryProfile();
+  const [one, two] = provider.accounts;
+  one.tickToken = 'first-isolated-token';
+  two.tickToken = 'second-isolated-token';
+  const connect = (service, token) => service.run('connect', { provider: 'ticktick', route: 'token', token });
+  const clear = provider.controls.blockTickReads(30 * 60);
+  const limited = { code: 'RATE_LIMITED' };
+  const service = new CalendarService(profile, registry);
+  await assert.rejects(connect(service, one.tickToken), limited);
+  const reopened = memoryProfile();
+  reopened.data = JSON.parse(JSON.stringify(profile.data));
+  assert(!JSON.stringify(reopened.data).includes(one.tickToken));
+  const restored = new CalendarService(reopened, registry);
+  await assert.rejects(connect(restored, one.tickToken), limited);
+  assert.equal(provider.controls.requests.length, 1);
+  await connect(restored, two.tickToken);
+  assert.equal(reopened.data.connections.length, 1);
+  t.mock.timers.tick(30 * 60_000);
+  await clear();
+  await connect(restored, one.tickToken);
+  assert.equal(reopened.data.connections.length, 2);
+  assert(!Object.keys(reopened.data.pendingTickTickLimits || {}).length);
+});
 
 function oldMacProfile(rows) {
   const profile = memoryProfile();

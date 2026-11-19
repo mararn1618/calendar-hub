@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { isProviderRead } from './provider-server.mjs';
 
 const button = (area, name) => area.getByRole('button', { name, exact: true });
 const picker = page => page.getByRole('dialog', { name: 'Calendar color', exact: true });
@@ -53,7 +54,7 @@ export async function verifyCalendarColors({ page, provider, refresh, restart, s
   const tickDefault = await displayedColor(item('review'));
   const googleDefault = await displayedColor(item('studioevent'));
   const otherColor = await displayedColor(item('bmwmeeting'));
-  const writes = () => provider.controls.requests.filter(request => request.method !== 'GET').length;
+  const writes = () => provider.controls.requests.filter(request => !isProviderRead(request)).length;
   const before = writes();
   await chooseCalendarColor(page, 'TickTick', '#FFFFFF');
   assert.equal(await colorControl(page, 'TickTick').evaluate(node => document.activeElement === node), true);

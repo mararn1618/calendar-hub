@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto'
+import { isTickTickInbox as isInbox } from '../ticktick-calendars.mjs'
+import { clearRecoveredLimit, recordTickTickRateLimit, tickTickCooldown } from './ticktick-rate-limit.mjs'
+
+export { recordTickTickRateLimit, tickTickCooldown }
 
 const DAY = 86_400_000
+const HOUR = 3_600_000
 const CIVIL = /^\d{4}-\d{2}-\d{2}$/
 const STAMP = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::(\d{2})(\.\d{1,9})?)?(Z|[+-]\d{2}:?\d{2})?$/i
 const TASK_FIELDS = [
@@ -23,6 +28,15 @@ function id(value) {
 
 function failure(message, code, status) {
   return Object.assign(new Error(message), { code, status })
+}
+
+function unconfirmed(message, cause) {
+  const error = failure(message, 'UNCERTAIN')
+  if (cause?.code === 'RATE_LIMITED') {
+    error.retryAt = cause.retryAt
+    error.cause = cause
+  }
+  return error
 }
 
 function parseProjectMetadata(text) {
@@ -112,6 +126,13 @@ function apiTime(epoch, zone) {
   return localIso(epoch, zone).replace(/(?:\.000)?Z$/, '') + (minutes < 0 ? '-' : '+') + hours + rest
 }
 
+function calendarQueryWindow(start, end, zone) {
+  // TickTick searches instants. An all-day date can start in UTC+14 and finish in UTC-12.
+  const firstDay = civil(localIso(start, zone).slice(0, 10))
+  const lastDay = civil(localIso(end - 1, zone).slice(0, 10))
+  return { start: Math.min(start, firstDay - 14 * HOUR), end: Math.max(end, lastDay + DAY + 12 * HOUR), zone: 'UTC' }
+}
+
 function stable(value) {
   return JSON.stringify(value, (_key, part) => object(part)
     ? Object.fromEntries(Object.keys(part).sort().map(key => [key, part[key]]))
@@ -145,10 +166,6 @@ function version(task, dates, fields) {
   return createHash('sha256').update(stable(snapshot)).digest('base64url')
 }
 
-function isInbox(source) {
-  return source.id === 'inbox' || source.inbox === true
-}
-
 function confirmedInboxId(known, projectId) {
   if (!projectId || projectId === 'inbox') return known
   if (known && projectId !== known) throw new Error('TickTick returned different Inbox identifiers.')
@@ -178,6 +195,24 @@ function overlaps(item, start, end, zone) {
   const first = instant(item.start, zone)
   const last = instant(item.end, zone)
   return first < end && (first === last ? first >= start : last > start)
+}
+
+function collectItem(items, source, task, start, end, zone) {
+  if (!object(task)) throw new Error('TickTick returned an invalid task.')
+  const taskId = id(task.id)
+  if (task.status != null && !Number.isInteger(task.status)) throw new Error('TickTick returned an invalid task status.')
+  if (task.kind != null && typeof task.kind !== 'string') throw new Error('TickTick returned an invalid task kind.')
+  if ((task.status ?? 0) !== 0 || task.kind === 'NOTE') {
+    items.delete(taskId)
+    return
+  }
+  if (task.isAllDay != null && typeof task.isAllDay !== 'boolean' ||
+      ['startDate', 'dueDate', 'timeZone'].some(key => task[key] != null && typeof task[key] !== 'string')) {
+    throw new Error('TickTick returned an invalid task schedule.')
+  }
+  const item = normalize(source, task, zone)
+  if (item && overlaps(item, start, end, zone)) items.set(taskId, item)
+  else items.delete(taskId)
 }
 
 function writable(source) {
@@ -223,17 +258,33 @@ function draftFields(draft, zone, original) {
 export function createTickTick({
   token, expiresAt, apiBase = 'https://api.ticktick.com/open/v1', fetchImpl = fetch,
   timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
+  rateLimit = {}, onRateLimitChange, requestStats = {}, now = Date.now, inboxProjectId: savedInboxId,
 }) {
   if (typeof token !== 'string' || !token.trim() || /[\r\n]/.test(token)) {
     throw new Error('Enter a TickTick API token.')
   }
   const base = apiBase.replace(/\/+$/, '')
-  let inboxProjectId
+  let inboxProjectId = confirmedInboxId(undefined, savedInboxId)
 
-  async function request(path, { method = 'GET', body, write = false, parse = JSON.parse } = {}) {
-    if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+  function recordResponse(endpoint, status, at, retryAt) {
+    const stats = requestStats[endpoint] ??= { count: 0 }
+    stats.count++
+    stats.lastAt = at
+    stats.lastStatus = status
+    if (retryAt !== undefined) {
+      stats.lastLimitedAt = at
+      stats.lastRetryAt = retryAt
+    }
+  }
+
+  async function request(endpoint, path, { method = 'GET', body, write = false, parse = JSON.parse } = {}) {
+    const started = now()
+    const blocked = tickTickCooldown(rateLimit, started)
+    if (blocked) throw blocked
+    if (Number.isFinite(expiresAt) && expiresAt <= started) {
       throw failure('TickTick sign-in expired. Choose Reconnect in Calendars.', 'AUTH_REQUIRED')
     }
+    const previousRetryAt = rateLimit.retryAt
     let response
     try {
       response = await fetchImpl(base + path, {
@@ -245,14 +296,23 @@ export function createTickTick({
         ...(body ? { body: JSON.stringify(body) } : {}),
       })
     } catch {
+      recordResponse(endpoint, null, now())
       if (write) throw failure('The connection ended before TickTick confirmed the change. Check TickTick before trying again.', 'UNCERTAIN')
       throw new Error('Could not reach TickTick. Check your connection and refresh.')
     }
+    const at = now()
+    if (response.status === 429) {
+      const error = recordTickTickRateLimit(rateLimit, response.headers?.get?.('Retry-After'), at, endpoint)
+      recordResponse(endpoint, response.status, at, error.retryAt)
+      try { onRateLimitChange?.() } catch (cause) { error.cause = cause }
+      await response.body?.cancel().catch(() => {})
+      throw error
+    }
+    recordResponse(endpoint, response.status, at)
     if (!response.ok) {
       const status = response.status
       await response.body?.cancel().catch(() => {})
       if (status === 409 || status === 412) throw conflict()
-      if (status === 429) throw failure('TickTick reached its request limit. Try again later.', 'RATE_LIMITED', status)
       if (write && (status >= 500 || status === 408)) {
         throw failure('TickTick did not confirm the change (HTTP ' + status + '). Check the original task.', 'UNCERTAIN', status)
       }
@@ -265,22 +325,31 @@ export function createTickTick({
       await response.body?.cancel().catch(() => {})
       throw failure('TickTick has not confirmed the change (HTTP ' + response.status + '). Check the original task.', 'UNCERTAIN', response.status)
     }
+    if (!write && (response.status === 202 || response.status === 206)) {
+      await response.body?.cancel().catch(() => {})
+      throw failure('TickTick did not return a complete reply (HTTP ' + response.status + ').', 'PROVIDER_ERROR', response.status)
+    }
+    let result
     try {
       const text = await response.text()
-      return text.trim() ? parse(text) : null
+      result = text.trim() ? parse(text) : null
     } catch {
       if (write) throw failure('TickTick sent an unreadable reply. Check the original task before trying again.', 'UNCERTAIN')
       throw new Error('TickTick sent an unreadable reply. Refresh this list.')
     }
+    if (clearRecoveredLimit(rateLimit, previousRetryAt, endpoint, at)) {
+      try { onRateLimitChange?.() } catch { /* The saved deadline has already passed. */ }
+    }
+    return result
   }
 
   async function projectFolders() {
     const folders = new Map()
     let groups
     try {
-      groups = await request('/project/group', { parse: parseProjectMetadata })
+      groups = await request('folders', '/project/group', { parse: parseProjectMetadata })
     } catch (error) {
-      if (error.code === 'AUTH_REQUIRED') throw error
+      if (error.code === 'AUTH_REQUIRED' || error.code === 'RATE_LIMITED') throw error
       return folders
     }
     if (!Array.isArray(groups)) return folders
@@ -298,7 +367,7 @@ export function createTickTick({
     const limit = 200
     let inboxList
     for (let offset = 0; ; offset += limit) {
-      const page = await request('/project?offset=' + offset + '&limit=' + limit, { parse: parseProjectMetadata })
+      const page = await request('lists', '/project?offset=' + offset + '&limit=' + limit, { parse: parseProjectMetadata })
       if (!Array.isArray(page) || page.length > limit) throw new Error('TickTick returned an invalid list page.')
       for (const project of page) {
         if (!object(project)) throw new Error('TickTick returned an invalid list.')
@@ -307,7 +376,7 @@ export function createTickTick({
         seen.add(project.id)
         if (typeof project.name !== 'string') throw new Error('TickTick returned a list without a name.')
         if (project.kind?.toUpperCase() === 'NOTE') continue
-        const inbox = project.id === inboxProjectId || /^inbox(?:\d+)?$/.test(project.id)
+        const inbox = project.id === inboxProjectId || isInbox(project)
         const groupId = inbox || project.groupId == null || project.groupId === '' ? null : id(project.groupId)
         const archived = Boolean(project.closed)
         const list = {
@@ -334,22 +403,33 @@ export function createTickTick({
     }, ...lists]
   }
 
-  async function inboxTasks(start, end, taskIds) {
+  async function datedTasks(body) {
+    const tasks = await request('datedTasks', '/task/undone', { method: 'POST', body })
+    if (!Array.isArray(tasks) || !tasks.every(object)) throw new Error('TickTick returned an invalid task list.')
+    return tasks
+  }
+
+  async function* datedTaskPages(projectIds, start, end, { taskIds, includeAllDayDates } = {}) {
+    const window = includeAllDayDates ? calendarQueryWindow(start, end, timeZone) : { start, end, zone: timeZone }
+    for (let cursor = window.start; cursor < window.end;) {
+      const lastDay = shiftDay(localIso(cursor, window.zone).slice(0, 10), 14)
+      const next = Math.min(window.end, cursor + 14 * DAY, instant(lastDay, window.zone))
+      const body = { projectIds, startDate: apiTime(cursor, window.zone), endDate: apiTime(next - 1, window.zone) }
+      if (taskIds) body.taskIds = taskIds
+      yield { body, tasks: await datedTasks(body) }
+      cursor = next
+    }
+  }
+
+  async function inboxTasks(start, end, options) {
     const tasks = []
     let foundInboxId = inboxProjectId
-    for (let cursor = start; cursor < end;) {
-      const lastDay = shiftDay(localIso(cursor, timeZone).slice(0, 10), 14)
-      const next = Math.min(end, cursor + 14 * DAY, instant(lastDay, timeZone))
-      const body = { projectIds: ['inbox'], startDate: apiTime(cursor, timeZone), endDate: apiTime(next - 1, timeZone) }
-      if (taskIds) body.taskIds = taskIds
-      const page = await request('/task/undone', { method: 'POST', body })
-      if (!Array.isArray(page)) throw new Error('TickTick returned an invalid Inbox response.')
-      for (const task of page) {
-        if (!object(task)) throw new Error('TickTick returned an invalid Inbox task.')
+    for await (const page of datedTaskPages(['inbox'], start, end, options)) {
+      for (const task of page.tasks) {
+        if (options?.taskIds && !options.taskIds.includes(task.id)) throw new Error('TickTick returned a different Inbox task.')
         foundInboxId = confirmedInboxId(foundInboxId, task.projectId)
         tasks.push(task)
       }
-      cursor = next
     }
     inboxProjectId = confirmedInboxId(inboxProjectId, foundInboxId)
     return tasks
@@ -360,9 +440,9 @@ export function createTickTick({
       const projectPath = '/project/' + encodeURIComponent(id(expectedId))
       let project
       try {
-        project = await request(projectPath)
+        project = await request('list', projectPath)
       } catch (error) {
-        if (error.code === 'AUTH_REQUIRED') throw error
+        if (error.code === 'AUTH_REQUIRED' || error.code === 'RATE_LIMITED') throw error
       }
       if (object(project) && project.id === expectedId) inboxProjectId = confirmedInboxId(inboxProjectId, project.id)
     }
@@ -376,26 +456,64 @@ export function createTickTick({
     if (from >= until) throw new Error('The calendar range must end after it starts.')
     let rows
     if (isInbox(source)) {
-      rows = await inboxTasks(from, until)
+      rows = await inboxTasks(from, until, { includeAllDayDates: true })
     } else {
-      const data = await request('/project/' + encodeURIComponent(id(source.id)) + '/data')
+      const data = await request('listTasks', '/project/' + encodeURIComponent(id(source.id)) + '/data')
       if (!Array.isArray(data?.tasks) || (data.project?.id && data.project.id !== source.id)) {
         throw new Error('TickTick returned an invalid task list.')
       }
       rows = data.tasks
     }
     const result = new Map()
-    for (const row of rows) {
-      if (!object(row)) throw new Error('TickTick returned an invalid task.')
-      if ((row.status ?? 0) !== 0 || row.kind === 'NOTE') continue
-      const item = normalize(source, row, timeZone)
-      if (item && overlaps(item, from, until, timeZone)) result.set(item.id, item)
-    }
+    for (const row of rows) collectItem(result, source, row, from, until, timeZone)
     return [...result.values()]
   }
 
+  async function itemsForSources(sources, start, end) {
+    const from = instant(start, timeZone)
+    const until = instant(end, timeZone)
+    if (from >= until) throw new Error('The calendar range must end after it starts.')
+    const byProject = new Map(sources.map(source => [id(source.id), source]))
+    const selected = [...byProject.values()]
+    const results = new Map(selected.map(source => [source.id, new Map()]))
+    if (!selected.length) return results
+    const inbox = selected.find(isInbox)
+    const projectIds = selected.map(source => isInbox(source) ? 'inbox' : source.id)
+    if (new Set(projectIds).size !== projectIds.length) throw new Error('Choose one Inbox for this TickTick account.')
+    let knownInboxId = confirmedInboxId(inboxProjectId, inbox?.id)
+    if (inbox) {
+      byProject.set('inbox', inbox)
+      if (knownInboxId) byProject.set(knownInboxId, inbox)
+    }
+    for await (const { body, tasks } of datedTaskPages(projectIds, from, until, { includeAllDayDates: true })) {
+      const unknown = new Map()
+      for (const task of tasks) {
+        const projectId = id(task.projectId)
+        if (!byProject.has(projectId)) unknown.set(projectId, id(task.id))
+      }
+      if (unknown.size) {
+        if (!inbox || knownInboxId || unknown.size !== 1) throw new Error('TickTick returned tasks from an unexpected list.')
+        const [[projectId, taskId]] = unknown
+        if (selected.length > 1) {
+          const checked = await datedTasks({ ...body, projectIds: ['inbox'], taskIds: [taskId] })
+          if (checked.length !== 1 || checked[0].id !== taskId || checked[0].projectId !== projectId) {
+            throw new Error('TickTick could not confirm the list of an Inbox task.')
+          }
+        }
+        knownInboxId = projectId
+        byProject.set(projectId, inbox)
+      }
+      for (const task of tasks) {
+        const source = byProject.get(task.projectId)
+        collectItem(results.get(source.id), source, task, from, until, timeZone)
+      }
+    }
+    inboxProjectId = confirmedInboxId(inboxProjectId, knownInboxId)
+    return new Map([...results].map(([sourceId, items]) => [sourceId, [...items.values()]]))
+  }
+
   async function readTask(source, project, taskId) {
-    const task = await request(taskPath(project, taskId))
+    const task = await request('task', taskPath(project, taskId))
     if (task?.id !== taskId || (task.projectId && task.projectId !== project && !(isInbox(source) && project === 'inbox'))) {
       throw new Error('TickTick returned a different task.')
     }
@@ -411,7 +529,7 @@ export function createTickTick({
     let task
     if (isInbox(source) && project === 'inbox' && !inboxProjectId) {
       const from = instant(original.start, timeZone)
-      task = (await inboxTasks(from, from + DAY, [original.id])).find(row => row.id === original.id)
+      task = (await inboxTasks(from, from + DAY, { taskIds: [original.id], includeAllDayDates: true })).find(row => row.id === original.id)
       if (!task) throw conflict()
     } else {
       try {
@@ -440,26 +558,25 @@ export function createTickTick({
   }
 
   async function save(source, path, body, taskId) {
-    const reply = await request(path, { method: 'POST', body, write: true })
+    const reply = await request(taskId ? 'updateTask' : 'createTask', path, { method: 'POST', body, write: true })
     if (!taskId && (typeof reply?.id !== 'string' || !reply.id.trim())) {
       throw failure('TickTick accepted the create without returning a task ID. Check the chosen list before creating it again.', 'UNCERTAIN')
     }
     const remoteId = taskId || reply.id
+    let confirmationError
     try {
       let task = reply
       if (isInbox(source) && body.projectId === 'inbox' && !inboxProjectId) {
         const from = instant(schedule(body, timeZone).start, timeZone)
-        const found = (await inboxTasks(from, from + DAY, [remoteId])).find(row => row.id === remoteId)
+        const found = (await inboxTasks(from, from + DAY, { taskIds: [remoteId], includeAllDayDates: true })).find(row => row.id === remoteId)
         task = found && { ...found, projectId: found.projectId || 'inbox' }
       } else if (!matches(source, task, remoteId, body)) {
         const project = body.projectId === 'inbox' ? inboxProjectId : body.projectId
         task = await readTask(source, project, remoteId)
       }
       if (matches(source, task, remoteId, body)) return normalize(source, task, timeZone)
-    } catch {
-      // The original write has already been sent.
-    }
-    const error = failure('TickTick accepted the request, but its saved dates or task fields could not be confirmed. Check the original task.', 'UNCERTAIN')
+    } catch (error) { confirmationError = error }
+    const error = unconfirmed('TickTick accepted the request, but its saved dates or task fields could not be confirmed. Check the original task.', confirmationError)
     error.providerId = remoteId
     throw error
   }
@@ -486,23 +603,22 @@ export function createTickTick({
   async function complete(source, original) {
     const fresh = await current(source, original)
     if (isInbox(source)) {
-      const ids = await request('/task/completeTasks', { method: 'POST', body: { taskIds: [original.id] }, write: true })
+      const ids = await request('completeInboxTask', '/task/completeTasks', { method: 'POST', body: { taskIds: [original.id] }, write: true })
       if (!Array.isArray(ids) || !ids.includes(original.id)) {
         throw failure('TickTick did not confirm completion of this Inbox task. Check the original task.', 'UNCERTAIN')
       }
       return normalize(source, { ...fresh, status: 2 }, timeZone)
     }
     const project = fresh.projectId || source.id
-    await request(taskPath(project, original.id) + '/complete', { method: 'POST', write: true })
+    await request('completeTask', taskPath(project, original.id) + '/complete', { method: 'POST', write: true })
+    let confirmationError
     try {
       const saved = await readTask(source, project, original.id)
       if (saved.status === 2) return normalize(source, { ...fresh, ...saved }, timeZone) ||
         { ...original, completed: true, canEdit: false, canComplete: false }
-    } catch {
-      // A task missing from the open list does not establish completion.
-    }
-    throw failure('TickTick accepted completion, but the completed status could not be confirmed. Check the original task.', 'UNCERTAIN')
+    } catch (error) { confirmationError = error }
+    throw unconfirmed('TickTick accepted completion, but the completed status could not be confirmed. Check the original task.', confirmationError)
   }
 
-  return { sources, items, create, update, complete, accountInboxId }
+  return { sources, items, itemsForSources, create, update, complete, accountInboxId }
 }

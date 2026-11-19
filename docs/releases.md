@@ -19,13 +19,13 @@ git tag -a v0.6.2
 git push origin v0.6.2
 ```
 
-The tag must match both package files. Follow the run under **Actions → Mac preview release**. Once the download is public, run `git push origin main` to put the working link on the repository homepage. A failed check leaves the download unpublished. For a temporary runner or network failure, use **Re-run failed jobs**. If the tagged code needs a fix, commit it and tag the next version. Keep published tags and assets intact. [Release runs](https://github.com/mararn1618/calendar-hub/actions/workflows/release.yml)
+The tag must match both package files. Follow the run under **Actions → Mac preview release**. Once the download is public, run `git push origin main` to put the working link on the repository homepage. For a temporary runner or network failure, use **Re-run failed jobs**. For tags created with the updated workflow after `v0.6.1`, you can also choose **Run workflow** and select the existing version tag. A successful run on that tag publishes its verified installer. If the tagged code needs a fix, commit it and tag the next version. Keep published tags and assets intact. [Release runs](https://github.com/mararn1618/calendar-hub/actions/workflows/release.yml)
 
 Preview downloads appear on the full Releases page. GitHub's Latest release shortcut looks for a stable release. [All Calendar Hub releases](https://github.com/mararn1618/calendar-hub/releases)
 
 ## Check a build before tagging
 
-Choose **Actions → Mac preview release → Run workflow** to test a branch and download its installer as a workflow artifact. Publishing starts only on a tag push.
+Choose **Actions → Mac preview release → Run workflow** and select a branch to test it and download its installer as a workflow artifact.
 
 On an Apple Silicon Mac, `npm ci`, `npm run package:mac`, then `npm run package:dmg` produce the DMG and its checksum under `build/release/`. The mounted image contains the app, a shortcut to Applications and the bundled license notices.
 

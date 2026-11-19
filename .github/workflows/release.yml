@@ -85,7 +85,7 @@ jobs:
   publish:
     name: Publish the verified preview
     needs: build
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: github.ref_type == 'tag' && !github.event.deleted
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

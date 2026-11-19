@@ -22,7 +22,7 @@ Use the Mac's local time zone. Open on today. A full week begins on Monday. Next
 
 For uncertain TickTick recurrence behavior, show recurring tasks and explain any editing limitation before a change. For BMW, the initial contract is read-only. Direct Exchange mailbox access and organizer edits remain on the [roadmap](../.scratch/first-mac-release/spec.md).
 
-A single daily summary for dated tasks without a time and all-day events is planned for a later release.
+A later release should combine the day's all-day events and dated tasks without a time into one notification. The preferred time is 09:00 on the Mac's local clock.
 
 ## Evidence
 

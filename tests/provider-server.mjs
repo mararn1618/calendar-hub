@@ -1,0 +1,145 @@
+import { createServer } from 'node:http';
+import { createHash, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
+
+export function civilDay(date = new Date()) {
+  return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
+}
+const stamp = (day, hour, minute = 0) => new Date(day + 'T' + String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0') + ':00').toISOString();
+const tickStamp = value => new Date(value).toISOString().replace('Z', '+0000');
+
+export async function startProviderServer() {
+  const day = civilDay(), zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const midnight = tickStamp(stamp(day, 0));
+  const originals = new Map();
+  const projects = [{ id: 'planning', name: 'Planning tasks', permission: 'write', color: '#138179' }];
+  originals.set('review', { id: 'review', projectId: 'planning', title: 'Review the launch plan', content: 'Keep these notes.',
+    items: [{ id: 'checklist-one', title: 'Check the agenda', status: 0 }], tags: ['planning'], priority: 3,
+    startDate: midnight, dueDate: midnight, timeZone: zone, isAllDay: true, status: 0 });
+  originals.set('timed', { id: 'timed', projectId: 'planning', title: 'Prepare interview questions', status: 0,
+    startDate: tickStamp(stamp(day, 14)), dueDate: tickStamp(stamp(day, 14, 45)), timeZone: zone, isAllDay: false });
+  originals.set('inbox-one', { id: 'inbox-one', projectId: 'inbox-user', title: 'Read studio brief', status: 0,
+    startDate: midnight, dueDate: midnight, timeZone: zone, isAllDay: true });
+  const calendars = [
+    { id: 'studio@example.test', summary: 'Studio', accessRole: 'owner', primary: true, backgroundColor: '#366aba' },
+    { id: 'bmw-copy', summary: 'BMW Work', accessRole: 'writer', backgroundColor: '#bb7046' },
+    { id: 'tick-copy', summary: 'TickTick copies', accessRole: 'reader', backgroundColor: '#776cb2' }
+  ];
+  const events = new Map(calendars.map(calendar => [calendar.id, new Map()]));
+  const addEvent = (calendar, id, title, start, end, extra = {}) => events.get(calendar).set(id, {
+    id, summary: title, start: { dateTime: start }, end: { dateTime: end }, etag: '"1"', status: 'confirmed',
+    eventType: 'default', organizer: { email: calendar, self: true }, description: 'Retain this original description.', ...extra
+  });
+  addEvent(calendars[0].id, 'studioevent', 'Design review', stamp(day, 10), stamp(day, 11));
+  addEvent(calendars[0].id, 'meetingwithguests', 'Research roundtable', stamp(day, 13), stamp(day, 14), { attendees: [{ email: 'guest@example.test' }] });
+  addEvent(calendars[0].id, 'weeklyinstance', 'Weekly check-in', stamp(day, 15), stamp(day, 15, 30),
+    { recurringEventId: 'weeklyseries', originalStartTime: { dateTime: stamp(day, 15) } });
+  addEvent('bmw-copy', 'bmwmeeting', 'BMW project sync', stamp(day, 10, 30), stamp(day, 11, 30));
+  addEvent('tick-copy', 'tickcopy', 'Review the launch plan', stamp(day, 9), stamp(day, 9, 30));
+  const controls = { unavailable: new Set(), noTickId: false, requests: [] };
+  const authorizations = new Map();
+  let origin;
+
+  const server = createServer(async (request, response) => {
+    const u = new URL(request.url, origin), method = request.method;
+    const buffers = [];
+    for await (const chunk of request) buffers.push(chunk);
+    const contents = Buffer.concat(buffers).toString();
+    const json = (status, body) => {
+      response.writeHead(status, { 'content-type': 'application/json' });
+      response.end(body === undefined ? undefined : JSON.stringify(body));
+    };
+    try {
+      if (u.pathname === '/oauth/authorize') {
+        if (!u.searchParams.get('state') || !u.searchParams.get('code_challenge')) return json(400, { error: 'missing OAuth state or PKCE' });
+        const id = randomUUID();
+        authorizations.set(id, Object.fromEntries(u.searchParams));
+        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        return response.end('<title>Test calendar consent</title><form method="post" action="/oauth/consent"><input type="hidden" name="id" value="' + id + '"><button>Authorize test calendars</button></form>');
+      }
+      if (u.pathname === '/oauth/consent' && method === 'POST') {
+        const id = new URLSearchParams(contents).get('id'), auth = authorizations.get(id);
+        if (!auth) return json(400);
+        const callback = new URL(auth.redirect_uri);
+        callback.searchParams.set('code', id); callback.searchParams.set('state', auth.state);
+        response.writeHead(302, { location: callback.href }); return response.end();
+      }
+      if (u.pathname === '/oauth/token') {
+        const form = new URLSearchParams(contents);
+        if (form.get('grant_type') === 'authorization_code') {
+          const auth = authorizations.get(form.get('code'));
+          if (!auth || createHash('sha256').update(form.get('code_verifier') || '').digest('base64url') !== auth.code_challenge) return json(400, { error: 'invalid_grant' });
+          return json(200, { access_token: 'fixture-google-access', refresh_token: 'fixture-google-refresh', token_type: 'Bearer', expires_in: 3600, scope: auth.scope });
+        }
+        return form.get('refresh_token') === 'fixture-google-refresh' ? json(200, { access_token: 'fixture-google-access', expires_in: 3600, token_type: 'Bearer' }) : json(401);
+      }
+      const isGoogle = u.pathname.startsWith('/google/calendar/v3/');
+      const prefix = isGoogle ? '/google/calendar/v3' : '/tick/open/v1';
+      if (!u.pathname.startsWith(prefix + '/')) return json(404);
+      const parts = u.pathname.slice(prefix.length + 1).split('/').map(decodeURIComponent);
+      const expected = isGoogle ? 'fixture-google-access' : 'fixture-tick-token';
+      if (request.headers.authorization !== 'Bearer ' + expected) return json(401, { error: { message: 'Invalid test credential.' } });
+      const body = contents ? JSON.parse(contents) : {};
+      controls.requests.push({ provider: isGoogle ? 'google' : 'ticktick', method, path: parts.join('/'), query: Object.fromEntries(u.searchParams) });
+      if (isGoogle) {
+        if (parts.join('/') === 'users/me/calendarList') {
+          return u.searchParams.has('pageToken') ? json(200, { items: calendars.slice(2) }) : json(200, { items: calendars.slice(0, 2), nextPageToken: 'more' });
+        }
+        const [, calendarId, resource, id] = parts, entries = events.get(calendarId);
+        if (resource !== 'events' || !entries) return json(404);
+        if (controls.unavailable.has(calendarId)) return json(503, { error: { message: 'Calendar temporarily unavailable.' } });
+        if (method === 'GET' && !id) {
+          const from = Date.parse(u.searchParams.get('timeMin')), until = Date.parse(u.searchParams.get('timeMax'));
+          const instant = boundary => Date.parse(boundary.dateTime || boundary.date + 'T00:00:00');
+          const items = [...entries.values()].filter(item => instant(item.start) < until && instant(item.end) > from);
+          return json(200, { items, timeZone: zone });
+        }
+        const original = entries.get(id);
+        if (method === 'GET') return original ? json(200, original) : json(404);
+        if (method === 'POST') {
+          if (entries.has(body.id)) return json(409);
+          const item = { ...body, id: body.id, status: 'confirmed', etag: '"1"', organizer: { self: true, email: calendarId } };
+          entries.set(item.id, item); return json(200, item);
+        }
+        if (!original) return json(404);
+        if (request.headers['if-match'] !== original.etag) return json(412, { error: { message: 'Changed on the server.' } });
+        if (method === 'PATCH') {
+          Object.assign(original, body, { etag: '"' + (Number(original.etag.replaceAll('"', '')) + 1) + '"' });
+          return json(200, original);
+        }
+        if (method === 'DELETE') { entries.delete(id); return json(204); }
+      } else {
+        const [first, second, third, id, action] = parts;
+        if (first === 'project' && !second) return json(200, projects);
+        if (first === 'project' && third === 'data') return json(200, { project: projects.find(p => p.id === second), tasks: [...originals.values()].filter(t => t.projectId === second && !t.status) });
+        if (first === 'project' && third === 'task') {
+          const original = originals.get(id);
+          if (!original || original.projectId !== second) return json(404);
+          if (method === 'GET') return json(200, original);
+          if (action === 'complete' && method === 'POST') { original.status = 2; return json(200); }
+        }
+        if (first === 'task' && second === 'undone') return json(200, [...originals.values()].filter(item => item.projectId === 'inbox-user' && !item.status));
+        if (first === 'task' && second === 'completeTasks') {
+          for (const id of body.taskIds) if (originals.has(id)) originals.get(id).status = 2;
+          return json(200, body.taskIds);
+        }
+        if (first === 'task' && !second && method === 'POST') {
+          const item = { status: 0, ...body, id: randomUUID() };
+          originals.set(item.id, item);
+          if (controls.noTickId) { controls.noTickId = false; return json(201); }
+          return json(201, item);
+        }
+        if (first === 'task' && method === 'POST') {
+          const original = originals.get(second);
+          if (!original || original.projectId !== body.projectId || body.id !== second) return json(400);
+          Object.assign(original, body); return json(200, original);
+        }
+      }
+      return json(404);
+    } catch (error) { return json(500, { error: { message: error.message } }); }
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  origin = 'http://127.0.0.1:' + server.address().port;
+  return { origin, day, originals, events, controls, close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
+}

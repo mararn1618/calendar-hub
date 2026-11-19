@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>local.calendarcentral.desktop.mac-calendars</string>
+  <key>CFBundleName</key>
+  <string>Calendar Central</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>Show events from Mac calendars you select in Calendar Central.</string>
+  <key>NSCalendarsUsageDescription</key>
+  <string>Show events from Mac calendars you select in Calendar Central.</string>
+</dict>
+</plist>

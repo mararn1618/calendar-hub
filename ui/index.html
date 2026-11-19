@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Calendar Central</title>
+  <link rel="stylesheet" href="./app.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <div class="workspace">
+    <aside class="sidebar" aria-label="Calendar navigation">
+      <div class="brand"><span class="app-icon" aria-hidden="true"><i></i></span><span>Calendar Central</span></div>
+      <button id="new-item" class="primary new-item" type="button"><span class="icon i-plus" aria-hidden="true"></span>New item<span class="shortcut" aria-hidden="true">N</span></button>
+      <section class="mini-month" aria-label="Date picker">
+        <div class="section-top">
+          <h2 id="mini-heading"></h2>
+          <div class="controls">
+            <button type="button" class="icon-button" id="month-prev" aria-label="Previous month" title="Previous month"><span class="icon i-left" aria-hidden="true"></span></button>
+            <button type="button" class="icon-button" id="month-next" aria-label="Next month" title="Next month"><span class="icon i-right" aria-hidden="true"></span></button>
+          </div>
+        </div>
+        <div class="mini-weekdays" aria-hidden="true"><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span><span>S</span></div>
+        <div id="mini-days" class="mini-days"></div>
+      </section>
+      <section class="source-section" aria-label="Selected calendars">
+        <div class="section-top"><h2>Calendars</h2><button type="button" class="icon-button" id="manage-calendars" aria-label="Manage calendars" title="Manage calendars"><span class="icon i-settings" aria-hidden="true"></span></button></div>
+        <div id="source-list"></div>
+      </section>
+      <div class="sidebar-foot">
+        <div class="sync-caption"><span class="status-dot" id="status-dot"></span><span id="sync-status" role="status">Opening calendar</span></div>
+        <button type="button" id="refresh" class="icon-button" aria-label="Refresh" title="Refresh calendars"><span class="icon i-refresh" aria-hidden="true"></span></button>
+      </div>
+    </aside>
+    <main>
+      <header class="main-head">
+        <div class="range-titles"><div id="range-context"></div><h1 id="range-title">Calendar</h1></div>
+        <nav class="date-navigation" aria-label="Navigate dates">
+          <button type="button" id="prev" class="icon-button" aria-label="Previous date range" title="Previous date range"><span class="icon i-left" aria-hidden="true"></span></button>
+          <button type="button" id="today" title="Today (T)">Today</button>
+          <button type="button" id="next" class="icon-button" aria-label="Next date range" title="Next date range"><span class="icon i-right" aria-hidden="true"></span></button>
+        </nav>
+      </header>
+      <div class="view-bar">
+        <div class="segmented" role="group" aria-label="Calendar view">
+          <button type="button" data-view="day">Day</button><button type="button" data-view="week">Week</button><button type="button" data-view="next">Next X Days</button>
+        </div>
+        <label id="count-control" hidden>Show <input type="number" id="day-count" aria-label="Number of days" min="1" max="31" value="3"> days</label>
+        <span id="zone-name" title="Mac time zone"></span>
+      </div>
+      <section id="notices" aria-label="Calendar messages"></section>
+      <div id="calendar-body">
+        <section id="timeline" aria-label="Calendar timeline" tabindex="0"></section>
+        <div id="empty" hidden></div>
+      </div>
+      <footer class="main-foot"><span id="range-summary"></span><button id="hidden-items" type="button">Hidden items</button></footer>
+    </main>
+  </div>
+  <dialog id="dialog" aria-labelledby="dialog-title"></dialog>
+  <div id="context-menu" role="menu" aria-label="Item actions" hidden></div>
+  <div id="toast" role="status" hidden></div>
+</body>
+</html>

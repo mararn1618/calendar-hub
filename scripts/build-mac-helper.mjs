@@ -7,7 +7,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const target = (process.arch === 'arm64' ? 'arm64' : 'x86_64') + '-apple-macos14.0';
+export const minimumMacOSVersion = '14.0';
+const target = (process.arch === 'arm64' ? 'arm64' : 'x86_64') + '-apple-macos' + minimumMacOSVersion;
 
 async function nodeHeaders(staging) {
   const candidates = [process.env.NODE_INCLUDE_DIR, resolve(dirname(process.execPath), '../include/node')];

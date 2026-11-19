@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readGoogleDesktopClient } from '../desktop/google-client.mjs';
-import { buildMacHelpers } from './build-mac-helper.mjs';
+import { buildMacHelpers, minimumMacOSVersion } from './build-mac-helper.mjs';
 
 if (process.platform !== 'darwin') throw new Error('Build the Mac app on macOS.');
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -38,7 +38,8 @@ try {
   const [output] = await packager({
     dir: sources, name: manifest.productName, platform: 'darwin', arch: process.arch, electronVersion: devDependencies.electron,
     icon, appBundleId: 'local.calendarcentral.desktop', appCategoryType: 'public.app-category.productivity',
-    extendInfo: { NSCalendarsFullAccessUsageDescription: calendarPermission, NSCalendarsUsageDescription: calendarPermission },
+    extendInfo: { LSMinimumSystemVersion: minimumMacOSVersion,
+      NSCalendarsFullAccessUsageDescription: calendarPermission, NSCalendarsUsageDescription: calendarPermission },
     extraResource: [join(native, 'calendar-mac'), join(native, 'calendar-notifications.node')], asar: true, prune: false, overwrite: true,
     osxSign: { identity: '-', identityValidation: false, continueOnError: false,
       optionsForFile: () => ({ hardenedRuntime: false, timestamp: 'none' }) },

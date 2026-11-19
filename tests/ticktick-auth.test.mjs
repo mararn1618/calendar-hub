@@ -61,7 +61,7 @@ test('registers the app, uses PKCE and reuses its public registration on the nex
   assert.equal(issuer.received.registrations.length, 1);
   assert.equal(issuer.received.tokens.length, 2);
   const [registration] = issuer.received.registrations;
-  assert.equal(registration.client_name, 'Calendar Central');
+  assert.equal(registration.client_name, 'Calendar Hub');
   assert.deepEqual(registration.grant_types, ['authorization_code']);
   assert.deepEqual(registration.response_types, ['code']);
   assert.equal(registration.token_endpoint_auth_method, 'none');

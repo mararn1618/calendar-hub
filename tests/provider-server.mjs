@@ -80,7 +80,7 @@ export async function startProviderServer() {
       const oauthPath = isTickSignIn ? u.pathname.slice(5) : u.pathname;
       if (isTickSignIn && oauthPath === '/oauth/register' && method === 'POST') {
         const registration = JSON.parse(contents);
-        if (registration.token_endpoint_auth_method !== 'none' || registration.client_name !== 'Calendar Central' ||
+        if (registration.token_endpoint_auth_method !== 'none' || registration.client_name !== 'Calendar Hub' ||
             registration.redirect_uris?.length !== 1) return json(400, { error: 'invalid_client_metadata' });
         const id = randomUUID();
         publicClients.set(id, registration.redirect_uris[0]);

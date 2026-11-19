@@ -112,7 +112,7 @@ export async function authorizeGoogle({
           return;
         }
         used = true;
-        reply(200, 'You can close this tab and return to Calendar Central.');
+        reply(200, 'You can close this tab and return to Calendar Hub.');
         resolve(code);
       });
       server.listen(0, '127.0.0.1', () => {

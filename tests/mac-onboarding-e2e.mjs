@@ -67,7 +67,7 @@ export async function verifyMacOnboarding({ temporary, evidence }) {
     const bmw = fixtureItem(page, 'BMW planning meeting');
     assert.equal(await bmw.getAttribute('data-editable'), 'false');
     await bmw.click();
-    await page.getByRole('dialog', { name: 'Item details' }).getByText('This item is read-only in Calendar Central.').waitFor();
+    await page.getByRole('dialog', { name: 'Item details' }).getByText('This item is read-only in Calendar Hub.').waitFor();
     await dialog.getByRole('button', { name: 'Done', exact: true }).click();
     await page.locator('#new-item').click();
     const destinations = dialog.locator('#item-calendar option');

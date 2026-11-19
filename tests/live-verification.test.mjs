@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { destinationState, inspectDestinations } from './live-destinations.mjs';
 import { openProviderProbe } from './live-probe.mjs';
 
-const title = 'Calendar Central test synthetic item';
+const title = 'Calendar Hub test synthetic item';
 
 async function fixture(t, kind, serve) {
   const directory = await mkdtemp(join(tmpdir(), 'calendar-live-probe-test-'));

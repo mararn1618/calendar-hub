@@ -17,7 +17,7 @@ const project = fileURLToPath(new URL('../', import.meta.url));
 const started = new Date().toISOString(), run = started.replaceAll(/[:.]/g, '-');
 const evidence = join(project, 'build/verification', 'desktop-' + run);
 await mkdir(evidence, { recursive: true });
-const temporary = await mkdtemp(join(tmpdir(), 'calendar-central-e2e-'));
+const temporary = await mkdtemp(join(tmpdir(), 'calendar-hub-e2e-'));
 const configPath = join(temporary, 'test-config.json');
 const provider = await startProviderServer();
 await writeFile(configPath, JSON.stringify({ origin: provider.origin }));

@@ -5,10 +5,12 @@
   <key>CFBundleIdentifier</key>
   <string>local.calendarcentral.desktop.mac-calendars</string>
   <key>CFBundleName</key>
-  <string>Calendar Central</string>
+  <string>Calendar Hub</string>
+  <key>CFBundleDisplayName</key>
+  <string>Calendar Hub</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
-  <string>Show your selected calendars and save edits to the Google calendars you choose.</string>
+  <string>Calendar Hub shows your selected calendars and saves edits to the Google calendars you choose.</string>
   <key>NSCalendarsUsageDescription</key>
-  <string>Show your selected calendars and save edits to the Google calendars you choose.</string>
+  <string>Calendar Hub shows your selected calendars and saves edits to the Google calendars you choose.</string>
 </dict>
 </plist>

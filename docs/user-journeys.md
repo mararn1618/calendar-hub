@@ -1,4 +1,4 @@
-# Calendar Central first-release validation
+# Calendar Hub first-release validation
 
 Each journey starts in the Mac app. Check provider changes independently of the calendar screen. Use a separate app profile and synthetic tasks and events for automated runs.
 
@@ -26,4 +26,4 @@ A later release should combine the day's all-day events and dated tasks without 
 
 ## Evidence
 
-Exercise the installed or packaged desktop interface with real pointer and keyboard input. Read independent provider state to verify writes, record the app build and check restart behavior. Identify the provider boundary in every run. A local HTTP test service verifies the desktop and adapter paths. Live provider evidence additionally requires dedicated accounts or disposable calendars and lists connected to Calendar Central.
+Exercise the installed or packaged desktop interface with real pointer and keyboard input. Read independent provider state to verify writes, record the app build and check restart behavior. Identify the provider boundary in every run. A local HTTP test service verifies the desktop and adapter paths. Live provider evidence additionally requires dedicated accounts or disposable calendars and lists connected to Calendar Hub.

@@ -15,6 +15,6 @@ A Google copy or Mac calendar can supply read-only meetings for the first releas
 
 EventKit can read an Exchange calendar already syncing through Apple Calendar if the user grants calendar access. Since October 2026, affected Exchange Online accounts using Apple Internet Accounts may need an administrator to keep that connection syncing. For an Exchange Online mailbox, an approved Microsoft Graph connection can read meetings directly with delegated access. BMW's account type and permitted connection are unverified. [Apple Exchange notice](https://support.apple.com/en-us/149092) · [Microsoft Graph calendar view](https://learn.microsoft.com/en-us/graph/api/calendar-list-calendarview?view=graph-rest-1.0)
 
-For the editing roadmap, sending an organizer's time change can notify guests. An invited attendee can propose a time if the organizer permits proposals. The report lists the permissions and evidence needed at each step. [Reading the BMW calendar on Mac](../../../../.calendar-central-exchange-research/docs/research/exchange-on-mac.md)
+For the editing roadmap, sending an organizer's time change can notify guests. An invited attendee can propose a time if the organizer permits proposals. The report lists the permissions and evidence needed at each step. [Reading the BMW calendar on Mac](../../../../.calendar-hub-exchange-research/docs/research/exchange-on-mac.md)
 
 Research branch `research/exchange-on-mac`, commit `b662350a87f331e4ff4a3e85c3716093998de12b`. The report is also available with `git show b662350:docs/research/exchange-on-mac.md`.

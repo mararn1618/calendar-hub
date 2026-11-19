@@ -17,7 +17,7 @@ function clientId(value) {
 }
 
 async function post(endpoint, body, fetchImpl, signal, registration) {
-  const action = registration ? 'register Calendar Central' : 'finish sign-in';
+  const action = registration ? 'register Calendar Hub' : 'finish sign-in';
   let response;
   try {
     response = await fetchImpl(endpoint, {
@@ -91,12 +91,12 @@ export async function authorizeTickTick({
     const redirect = new URL('http://127.0.0.1:' + port + '/callback');
     if (!registration) {
       const data = await post(registrationEndpoint, {
-        client_name: 'Calendar Central', application_type: 'native', redirect_uris: [redirect.href],
+        client_name: 'Calendar Hub', application_type: 'native', redirect_uris: [redirect.href],
         token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], response_types: ['code'], scope: scopes,
       }, fetchImpl, signal, true);
       if (!clientId(data.client_id) || (data.token_endpoint_auth_method && data.token_endpoint_auth_method !== 'none') ||
           (data.redirect_uris && (!Array.isArray(data.redirect_uris) || !data.redirect_uris.includes(redirect.href)))) {
-        throw authError('TickTick did not register Calendar Central as a public Mac app. You can use a personal API token.');
+        throw authError('TickTick did not register Calendar Hub as a public Mac app. You can use a personal API token.');
       }
       registration = { endpoint: registrationEndpoint, clientId: data.client_id, port };
       if (registrationFile) {
@@ -126,7 +126,7 @@ export async function authorizeTickTick({
         }
         if (query.has('error')) {
           accept = null;
-          response.writeHead(200).end('Return to Calendar Central. TickTick sign-in did not finish.');
+          response.writeHead(200).end('Return to Calendar Hub. TickTick sign-in did not finish.');
           reject(authError(query.get('error') === 'access_denied' ? 'TickTick sign-in was cancelled.' : 'TickTick did not authorize this sign-in.')); return;
         }
         if (query.getAll('code').length !== 1 || !query.get('code')) {
@@ -134,7 +134,7 @@ export async function authorizeTickTick({
         }
         accept = null;
         signal.removeEventListener('abort', timedOut);
-        response.writeHead(200).end('You can close this tab and return to Calendar Central.');
+        response.writeHead(200).end('You can close this tab and return to Calendar Hub.');
         resolve(query.get('code'));
       };
       Promise.resolve().then(() => openExternal(url.href)).catch(() => reject(authError('Could not open TickTick sign-in in your browser.')));

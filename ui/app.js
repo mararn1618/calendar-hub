@@ -223,7 +223,7 @@ function refresh({ force = false, preferencesOnly = false, refreshNotifications 
   renderStatus();
   request.promise = (async () => {
     try {
-      if (!window.calendar?.state) throw new Error('Open the Calendar Central Mac app to load your calendars.');
+      if (!window.calendar?.state) throw new Error('Open the Calendar Hub Mac app to load your calendars.');
       const result = await window.calendar.state({ start, end, ...(reuseChecks && { preferencesOnly: true }), ...(refreshNotifications && { refreshNotifications: true }) });
       if (serial !== sequence || key !== rangeKey(range())) return;
       data = { ...emptyState, ...result };
@@ -248,7 +248,7 @@ function refresh({ force = false, preferencesOnly = false, refreshNotifications 
 async function mutate(method, payload) {
   let failure;
   try {
-    if (!window.calendar?.[method]) throw new Error('Open the Calendar Central Mac app to change a calendar.');
+    if (!window.calendar?.[method]) throw new Error('Open the Calendar Hub Mac app to change a calendar.');
     await window.calendar[method](payload);
   } catch (error) { failure = error; }
   const notifications = method === 'setCalendarNotifications';

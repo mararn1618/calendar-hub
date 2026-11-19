@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 
 const defaults = { enabled: false, leadMinutes: 10 };
 const minute = 60_000;
-const denied = 'Open System Settings > Notifications > Calendar Central and turn on Allow Notifications.';
-const unavailable = 'Calendar Central could not access Mac notifications. Open the installed app and try again.';
+const denied = 'Open System Settings > Notifications > Calendar Hub and turn on Allow Notifications.';
+const unavailable = 'Calendar Hub could not access Mac notifications. Open the installed app and try again.';
 
 function localDay(ms, offset = 0) {
   const day = new Date(ms);

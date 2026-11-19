@@ -13,7 +13,7 @@ struct CalendarFailure: Error {
     static let conflict = Self("CONFLICT", "This event changed in Mac Calendar. Refresh before editing it again.")
     static let readOnly = Self("READ_ONLY", "This calendar or event is read-only.")
     static let uncertain = Self("UNCERTAIN", "Mac Calendar may have saved the change. Check the calendar before trying again.")
-    static let permission = Self("PERMISSION", "Allow Calendar Central full calendar access in System Settings under Privacy & Security, then Calendars.")
+    static let permission = Self("PERMISSION", "Allow Calendar Hub full calendar access in System Settings under Privacy & Security, then Calendars.")
     static let invalid = Self("INVALID", "Check the event title, dates and calendar selection.")
 }
 
@@ -116,7 +116,7 @@ struct NativeCalendars {
     func calendar(_ id: String) throws -> EKCalendar {
         guard let calendar = store.calendar(withIdentifier: id), calendar.allowedEntityTypes.contains(.event),
               route == .mac || candidate(calendar) else {
-            throw CalendarFailure("UNAVAILABLE", "This calendar is no longer available. Choose it again in Calendar Central.")
+            throw CalendarFailure("UNAVAILABLE", "This calendar is no longer available. Choose it again in Calendar Hub.")
         }
         return calendar
     }

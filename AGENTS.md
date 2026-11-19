@@ -1,4 +1,4 @@
-# Calendar Central
+# Calendar Hub
 
 This is a new project based on Daymark, the task and calendar app in the sibling `ticktick_opensource` repository. The `context/` links provide reference material from both its main checkout and the development worktree used for the latest calendar changes.
 
@@ -27,7 +27,7 @@ This is a new project based on Daymark, the task and calendar app in the sibling
 
 ## Working rules
 
-- Write Calendar Central's implementation outside `context/`.
+- Write Calendar Hub's implementation outside `context/`.
 - Treat the linked project as a reference. Editing through a symlink changes the original Daymark files.
 - The links follow their respective checkouts as they change; they are not frozen snapshots. Main and the development worktree can diverge. Record the source path and commit when reusing code.
 - Some documentation is historical or describes planned features. Check current code and implementation evidence before assuming a feature is complete.

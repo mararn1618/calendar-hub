@@ -96,7 +96,7 @@ static void scheduleReminder(UNUserNotificationCenter *center, NSDictionary *row
 static void perform(UNUserNotificationCenter *center, NSString *operation, id payload, Reply reply) {
     if (!center) {
         if ([operation isEqualToString:@"authorization"] || [operation isEqualToString:@"requestAuthorization"]) reply(@"unavailable", nil);
-        else reply(nil, @"Open Calendar Central to manage Mac notifications.");
+        else reply(nil, @"Open Calendar Hub to manage Mac notifications.");
         return;
     }
     static CalendarNotificationDelegate *delegate = [[CalendarNotificationDelegate alloc] init];

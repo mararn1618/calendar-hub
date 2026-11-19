@@ -97,7 +97,7 @@ test('reports partial schedules, retries failed additions and serializes a concu
 });
 
 test('macOS builds a one-shot UTC trigger and cancels only its own native requests', { skip: process.platform !== 'darwin' }, async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'calendar-central-notification-unit-'));
+  const dir = await mkdtemp(join(tmpdir(), 'calendar-hub-notification-unit-'));
   const run = promisify(execFile);
   try {
     const fixture = fileURLToPath(new URL('./fixtures/mac-notification-center.mm', import.meta.url));

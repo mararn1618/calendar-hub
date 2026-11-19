@@ -13,7 +13,7 @@ import { openProviderProbe } from './live-probe.mjs';
 const execute = promisify(execFile);
 const output = fileURLToPath(new URL('../build/verification/live/', import.meta.url));
 const runId = randomUUID();
-const prefix = 'Calendar Central test ' + runId;
+const prefix = 'Calendar Hub test ' + runId;
 const title = { ticktick: prefix + ' task', google: prefix + ' appointment' };
 const names = { ticktick: process.env.CALENDAR_LIVE_TICKTICK_LIST, google: process.env.CALENDAR_LIVE_GOOGLE_CALENDAR };
 const kinds = ['ticktick', 'google'];
@@ -50,7 +50,7 @@ function closedDuringSetup(error) {
 async function recordClosedSetup(pending) {
   report.status = 'setup_closed';
   for (const kind of pending) report.providers[kind] = { status: 'not_run', reason: report.setup[kind] || 'setup closed' };
-  await stage('Calendar Central closed during live setup');
+  await stage('Calendar Hub closed during live setup');
 }
 
 const settings = () => page.getByRole('dialog', { name: 'Calendars', exact: true });
@@ -64,7 +64,7 @@ async function nextDestinations(pending, timeout) {
   let deadline = Date.now() + timeout;
   do {
     const inventory = await driver.application.evaluate(inspectDestinations);
-    need(!inventory.invalid, 'Use the packaged Calendar Central app with live provider connections.');
+    need(!inventory.invalid, 'Use the packaged Calendar Hub app with live provider connections.');
     report.build = inventory.build;
     const states = Object.fromEntries([...pending].map(kind => [kind, destinationState(kind, names[kind], inventory)]));
     const ready = Object.fromEntries(Object.entries(states).filter(([, state]) => state.source).map(([kind, state]) => [kind, state.source]));
@@ -106,14 +106,14 @@ async function nextDestinations(pending, timeout) {
 
 async function prepareNativeProbe() {
   if (nativeExecutable) return;
-  nativeDirectory = await mkdtemp(join(tmpdir(), 'calendar-central-live-'));
+  nativeDirectory = await mkdtemp(join(tmpdir(), 'calendar-hub-live-'));
   const info = join(nativeDirectory, 'Info.plist');
   await writeFile(info, '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>' +
     '<key>CFBundleIdentifier</key><string>local.calendarcentral.verification.eventkit</string>' +
-    '<key>CFBundleName</key><string>Calendar Central Test</string>' +
-    '<key>NSCalendarsFullAccessUsageDescription</key><string>Verify the disposable test event selected in Calendar Central.</string>' +
+    '<key>CFBundleName</key><string>Calendar Hub Test</string>' +
+    '<key>NSCalendarsFullAccessUsageDescription</key><string>Verify the disposable test event selected in Calendar Hub.</string>' +
     '</dict></plist>');
-  const executable = join(nativeDirectory, 'Calendar Central Test');
+  const executable = join(nativeDirectory, 'Calendar Hub Test');
   const target = (process.arch === 'arm64' ? 'arm64' : 'x86_64') + '-apple-macos14.0';
   await execute('xcrun', ['swiftc', '-parse-as-library', '-target', target,
     fileURLToPath(new URL('live-eventkit.swift', import.meta.url)), '-Xlinker', '-sectcreate', '-Xlinker', '__TEXT',
@@ -158,7 +158,7 @@ async function checkAppReceipt(kind, id) {
     const { journal } = JSON.parse(process.getBuiltinModule('fs').readFileSync(file, 'utf8'));
     return journal.some(entry => entry.sourceId === row.sourceId && entry.targetId === row.id);
   }, { sourceId: destinations[kind].id, id });
-  if (unconfirmed) throw new Incomplete('The source reflects the change, but Calendar Central retained the write for review.');
+  if (unconfirmed) throw new Incomplete('The source reflects the change, but Calendar Hub retained the write for review.');
 }
 async function showTestDays() {
   await button('Today').click();
@@ -296,7 +296,7 @@ async function verifyGoogle() {
   await verifyReadOnly(id);
   await stage('Hide the disposable Google event and restart');
   await item('google', id).click({ button: 'right' });
-  await page.getByRole('menuitem', { name: 'Hide in Calendar Central' }).click();
+  await page.getByRole('menuitem', { name: 'Hide in Calendar Hub' }).click();
   await item('google', id).waitFor({ state: 'detached' });
   await restart('google');
   need(await item('google', id).count() === 0, 'A hidden event returned after restarting the app.');
@@ -413,7 +413,7 @@ try {
   if (nativeDirectory) await rm(nativeDirectory, { recursive: true, force: true });
   if (leaveOpen) {
     try { await execute('/usr/bin/open', [appPath]); }
-    catch { report.applicationReopen = 'Open the packaged Calendar Central app to finish setup.'; await saveReport(); }
+    catch { report.applicationReopen = 'Open the packaged Calendar Hub app to finish setup.'; await saveReport(); }
   }
   console.log('Live desktop verification: ' + report.status + '. See build/verification/live/latest.json.');
   process.exitCode = report.status === 'passed' ? 0 : report.status === 'failed' ? 1 : 2;

@@ -57,6 +57,14 @@ int main() {
         NSCAssert([run(center, @"requestAuthorization") isEqual:@"allowed"] && center.prompts == 1, @"Explicit authorization");
         UNMutableNotificationContent *foreign = [UNMutableNotificationContent new];
         center.requests[@"other-kind"] = [UNNotificationRequest requestWithIdentifier:@"other-kind" content:foreign trigger:nil];
+        UNMutableNotificationContent *saved = [UNMutableNotificationContent new];
+        saved.userInfo = @{@"calendar-central.signature": @"saved-version"};
+        NSString *identifier = @"calendar-central.reminder.existing";
+        center.requests[identifier] = [UNNotificationRequest requestWithIdentifier:identifier content:saved trigger:nil];
+        NSDictionary *existing = run(center, @"snapshot");
+        NSCAssert(([existing[@"pending"] isEqual:@[@{@"id": @"existing", @"signature": @"saved-version"}]]), @"Recognize reminders from earlier releases");
+        run(center, @"cancel", @[@"existing"]);
+        NSCAssert(!center.requests[identifier], @"Earlier reminders can still be muted");
         NSTimeInterval second = ceil(NSDate.date.timeIntervalSince1970) + 3600;
         NSDictionary *reminder = @{@"id": @"sample", @"title": @"Team meeting", @"body": @"Sample calendar",
                                    @"seconds": @(second), @"signature": @"version"};
@@ -64,7 +72,7 @@ int main() {
         run(center, @"schedule", reminder);
         UNNotificationRequest *request = center.requests[@"calendar-central.reminder.sample"];
         NSCAssert([request.content.title isEqual:@"Team meeting"] && [request.content.body isEqual:@"Sample calendar"], @"Reminder text");
-        NSCAssert(request.content.sound && [request.content.userInfo[signatureKey] isEqual:@"version"], @"Sound and identity");
+        NSCAssert(request.content.sound && [request.content.userInfo[@"calendar-central.signature"] isEqual:@"version"], @"Sound and identity");
         UNCalendarNotificationTrigger *trigger = (UNCalendarNotificationTrigger *)request.trigger;
         NSCAssert(!trigger.repeats && trigger.dateComponents.timeZone.secondsFromGMT == 0, @"Absolute, non-repeating trigger");
         NSCAssert(fabs(trigger.nextTriggerDate.timeIntervalSince1970 - second) < 1, @"The trigger must match the source instant");

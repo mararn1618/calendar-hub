@@ -1,9 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain, powerMonitor, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, powerMonitor, safeStorage, shell } from 'electron';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CalendarService } from './calendar-service.mjs';
+import { configureAppIdentity } from './app-identity.mjs';
 import { Profile } from './profile.mjs';
 import { readGoogleDesktopClient } from './google-client.mjs';
 import { createTickTick } from './providers/ticktick.mjs';
@@ -12,11 +13,10 @@ import { createGoogle, authorizeGoogle, refreshGoogleToken } from './providers/g
 import { createMacCalendar } from './providers/mac.mjs';
 import { createMacNotificationCenter } from './mac-notifications.mjs';
 
-app.setName('Calendar Central');
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const index = path.join(directory, '../ui/index.html');
 const testArgument = process.argv.find(argument => argument.startsWith('--calendar-test-config='));
-let testOrigin;
+let testOrigin, testProfile;
 let macFixture = false;
 let browserFixture = true;
 if (testArgument) {
@@ -27,20 +27,18 @@ if (testArgument) {
   testOrigin = origin.origin;
   macFixture = config.macFixture === true;
   browserFixture = config.googleBrowser !== false;
-  const profilePath = path.join(path.dirname(configPath), 'profile');
-  mkdirSync(profilePath, { recursive: true, mode: 0o700 });
-  app.setPath('userData', profilePath);
+  testProfile = path.join(path.dirname(configPath), 'profile');
   app.commandLine.appendSwitch('use-mock-keychain');
 }
+configureAppIdentity(app, Menu, testProfile);
 
 const macHelper = app.isPackaged ? path.join(process.resourcesPath, 'calendar-mac') : path.join(directory, '../build/native/calendar-mac');
 const bundledGoogle = path.join(directory, 'google-desktop.json');
-const googleConfigFile = process.env.CALENDAR_CENTRAL_GOOGLE_DESKTOP_CONFIG || (existsSync(bundledGoogle) ? bundledGoogle : null);
 let googleClient, googleConfigError;
 if (testOrigin) {
   if (browserFixture) googleClient = { clientId: 'fixture.apps.googleusercontent.com', clientSecret: 'fixture-secret' };
 } else {
-  try { googleClient = readGoogleDesktopClient(googleConfigFile); }
+  try { googleClient = readGoogleDesktopClient() ?? (existsSync(bundledGoogle) ? readGoogleDesktopClient(bundledGoogle) : null); }
   catch { googleConfigError = 'The configured Google desktop client file could not be loaded.'; }
 }
 const nativeAvailable = process.platform === 'darwin' && (!testOrigin || macFixture);
@@ -88,7 +86,7 @@ async function inBrowser(authorize) {
 const registry = {
   connectionOptions: { googleBrowser: Boolean(googleClient), macCalendars: nativeAvailable, googleConfigError },
   macGoogleCalendars() {
-    if (!nativeAvailable) throw new Error('Open Calendar Central on a Mac to choose Apple Calendar accounts.');
+    if (!nativeAvailable) throw new Error('Open Calendar Hub on a Mac to choose Apple Calendar accounts.');
     return macClient().authorize({ google: true });
   },
   async authorize(input) {
@@ -106,7 +104,7 @@ const registry = {
     }
     if (input.provider !== 'google') throw new Error('This calendar provider is unavailable.');
     if (input.route === 'mac') {
-      if (!nativeAvailable) throw new Error('Open Calendar Central on a Mac to use Apple Calendar.');
+      if (!nativeAvailable) throw new Error('Open Calendar Hub on a Mac to use Apple Calendar.');
       const ids = input.googleCalendarIds;
       if (!Array.isArray(ids) || !ids.length || !ids.every(id => typeof id === 'string' && id.length)) {
         throw new Error('Choose at least one calendar from your Google account.');
@@ -145,7 +143,7 @@ const registry = {
 let mainWindow;
 function openWindow() {
   mainWindow = new BrowserWindow({
-    title: 'Calendar Central', width: 1430, height: 940, minWidth: 840, minHeight: 560,
+    title: 'Calendar Hub', width: 1430, height: 940, minWidth: 840, minHeight: 560,
     backgroundColor: '#f8fafb', webPreferences: {
       contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(directory, 'preload.cjs')
     }
@@ -161,7 +159,7 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on('second-instance', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } });
   app.whenReady().then(async () => {
-    if (!app.isPackaged) app.dock?.setIcon(path.join(directory, '../assets/calendar-central.png'));
+    if (!app.isPackaged) app.dock?.setIcon(path.join(directory, '../assets/calendar-hub.png'));
     registry.notificationCenter = testOrigin ? fixtureNotificationCenter(testOrigin) : createMacNotificationCenter();
     const service = new CalendarService(new Profile(app.getPath('userData'), safeStorage), registry);
     for (const action of ['state', 'connect', 'macGoogleCalendars', 'openInternetAccounts', 'disconnect', 'setSource',
@@ -196,6 +194,6 @@ if (!app.requestSingleInstanceLock()) {
       powerMonitor.off('resume', refreshNotifications);
     });
     app.on('activate', () => { if (!mainWindow) void openWindow(); });
-  }).catch(error => { dialog.showErrorBox('Calendar Central could not start', error.message); app.quit(); });
+  }).catch(error => { dialog.showErrorBox('Calendar Hub could not start', error.message); app.quit(); });
 }
 app.on('window-all-closed', () => app.quit());

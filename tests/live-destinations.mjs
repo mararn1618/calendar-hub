@@ -28,7 +28,7 @@ export function destinationState(kind, requested, inventory) {
 export function offerDestinations({ states, named }) {
   const dialog = document.querySelector('#dialog[open]');
   if (!dialog || dialog.querySelector('h2')?.textContent !== 'Calendars') return {};
-  const confirmed = window.calendarCentralLiveDestinations ??= {};
+  const confirmed = window.calendarHubLiveDestinations ??= {};
   let picker = dialog.querySelector('#live-test-destinations');
   if (!picker) {
     picker = document.createElement('fieldset');

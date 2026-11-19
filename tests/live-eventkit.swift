@@ -15,7 +15,7 @@ struct LiveEventProbe {
     }
 
     static func inspect(_ request: Request) async throws -> [String: Any] {
-        guard !request.id.isEmpty, request.title.hasPrefix("Calendar Central test ") else {
+        guard !request.id.isEmpty, request.title.hasPrefix("Calendar Hub test ") else {
             return ["error": "invalid test target"]
         }
         let store = EKEventStore()

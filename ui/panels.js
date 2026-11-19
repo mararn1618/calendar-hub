@@ -353,7 +353,7 @@ export function createPanels(actions) {
   }
   function disconnect(connection) {
     panel('disconnect', 'Disconnect calendar?', { back: settings });
-    body.append(element('p', '', 'Remove ' + (connection.name || providers[connection.provider]) + ' from Calendar Central? Its tasks and events stay with the provider.'));
+    body.append(element('p', '', 'Remove ' + (connection.name || providers[connection.provider]) + ' from Calendar Hub? Its tasks and events stay with the provider.'));
     footer.append(button('Cancel', settings), button('Disconnect', () => write('disconnect', { connectionId: connection.id }, settings), 'destructive'));
   }
   function connectionForm(provider, connection) {
@@ -363,12 +363,12 @@ export function createPanels(actions) {
     footer.append(button('Back', settings));
     if (provider === 'ticktick') {
       const help = connection ? 'Sign in with the same TickTick account to keep your calendar selections for ' + connection.name + '.' :
-        'Sign in at TickTick and allow Calendar Central to read and update your tasks.';
+        'Sign in at TickTick and allow Calendar Hub to read and update your tasks.';
       body.append(element('p', 'help', help),
         button('Use a personal token', () => advancedConnection(provider, connection), 'text-button'));
       footer.append(button('Continue with TickTick', () => finishConnection({ provider, connectionId: connection?.id }), 'primary'));
     } else if (provider === 'mac') {
-      body.append(element('p', 'help', 'Show meetings from Apple Calendar as read-only. Allow Calendar Central to read your calendars when macOS asks.'));
+      body.append(element('p', 'help', 'Show meetings from Apple Calendar as read-only. Allow Calendar Hub to read your calendars when macOS asks.'));
       footer.append(button('Choose Mac calendars', () => finishConnection({ provider }), 'primary'));
     } else {
       const { googleBrowser, macCalendars, googleConfigError } = state().connectionOptions || {};
@@ -405,7 +405,7 @@ export function createPanels(actions) {
     catch (error) {
       if (body !== target || !dialog.open) return;
       body.replaceChildren();
-      if (error.code === 'PERMISSION') body.append(element('p', 'help', 'Allow Calendar Central in System Settings under Privacy & Security → Calendars.'));
+      if (error.code === 'PERMISSION') body.append(element('p', 'help', 'Allow Calendar Hub in System Settings under Privacy & Security → Calendars.'));
       footer.append(button('Check again', chooseMacGoogleCalendars));
       warning(errorText(error));
       return;
@@ -510,9 +510,9 @@ export function createPanels(actions) {
       const location = [providers[source.provider], source.folder?.name, source.name].filter(Boolean).join(' · ');
       body.append(element('strong', 'details-title', item.title), element('p', 'detail-dates', spanDescription(item)), element('p', 'help', location));
       const reason = source.provider === 'ticktick' && item.recurring ? 'Open this recurring task in TickTick to change its schedule or completion.' :
-        item.completed ? 'This task is complete.' : 'This item is read-only in Calendar Central.';
+        item.completed ? 'This task is complete.' : 'This item is read-only in Calendar Hub.';
       body.append(element('p', 'inline-note', reason));
-      if (source.provider !== 'ticktick') footer.append(button('Hide in Calendar Central', () => hide(item), 'text-button'));
+      if (source.provider !== 'ticktick') footer.append(button('Hide in Calendar Hub', () => hide(item), 'text-button'));
       if (completable(item, source)) footer.append(button('Complete task', () => complete(item), 'primary'));
       footer.append(button('Done', close));
       return;
@@ -692,7 +692,7 @@ export function createPanels(actions) {
       const more = element('details', 'more-actions');
       more.append(element('summary', '', 'More actions'));
       const options = element('div');
-      options.append(button('Hide in Calendar Central', () => hide(item)));
+      options.append(button('Hide in Calendar Hub', () => hide(item)));
       if (deletable(item, source)) options.append(button('Delete from Google', () => review('remove', item, itemKey(item)), 'danger-text'));
       more.append(options);
       footer.append(more);
@@ -762,7 +762,7 @@ export function createPanels(actions) {
   }
 
   function hide(item) {
-    write('hide', { id: item.id, sourceId: item.sourceId }, () => { close(); actions.toast('Hidden in Calendar Central'); });
+    write('hide', { id: item.id, sourceId: item.sourceId }, () => { close(); actions.toast('Hidden in Calendar Hub'); });
   }
   function complete(item) {
     if (completable(item, sourceOf(item))) write('complete', itemKey(item), () => { close(); actions.toast('Task completed in TickTick'); });
@@ -770,7 +770,7 @@ export function createPanels(actions) {
   function hiddenItems() {
     panel('hidden', 'Hidden items', { wide: true });
     const rows = state().hidden;
-    body.append(element('p', 'help', rows.length ? 'These items stay on their source calendars. Restore an item to show it here again.' : 'No items are hidden. Use an item’s shortcut menu to hide it in Calendar Central.'));
+    body.append(element('p', 'help', rows.length ? 'These items stay on their source calendars. Restore an item to show it here again.' : 'No items are hidden. Use an item’s shortcut menu to hide it in Calendar Hub.'));
     for (const row of rows) {
       const entry = element('div', 'review-entry');
       const info = element('div');
@@ -790,7 +790,7 @@ export function createPanels(actions) {
       info.append(element('strong', '', row.title), element('small', '', sourceOf(row)?.name || 'Calendar'), element('p', 'help', row.message));
       entry.append(info, button('Mark reviewed', () => {
         panel('acknowledge', 'Mark write as reviewed?', { back: uncertainItems });
-        body.append(element('strong', 'details-title', row.title), element('p', '', 'Confirm that you checked the source for this item. Calendar Central will clear this notice.'));
+        body.append(element('strong', 'details-title', row.title), element('p', '', 'Confirm that you checked the source for this item. Calendar Hub will clear this notice.'));
         footer.append(button('Cancel', uncertainItems), button('I checked the source', () => write('acknowledge', { id: row.id }, uncertainItems), 'primary'));
       }));
       body.append(entry);
@@ -826,7 +826,7 @@ export function createPanels(actions) {
     };
     add(editable(item, source) ? 'Edit item' : 'View details', () => edit(item));
     if (completable(item, source)) add('Complete task', () => complete(item));
-    if (source.provider !== 'ticktick') add('Hide in Calendar Central', () => hide(item));
+    if (source.provider !== 'ticktick') add('Hide in Calendar Hub', () => hide(item));
     if (deletable(item, source)) add('Delete from Google', () => review('remove', item, itemKey(item)), true);
     showMenu('Item actions', choices, x, y, trigger);
   }

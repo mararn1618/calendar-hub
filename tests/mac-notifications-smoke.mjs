@@ -10,20 +10,20 @@ import { buildMacNotificationAddon } from '../scripts/build-mac-helper.mjs';
 
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL('../', import.meta.url));
-const staging = await mkdtemp(join(tmpdir(), 'calendar-central-notification-smoke-'));
+const staging = await mkdtemp(join(tmpdir(), 'calendar-hub-notification-smoke-'));
 try {
-  const name = 'Calendar Central Notification Check';
+  const name = 'Calendar Hub Notification Check';
   const source = join(staging, 'app');
   const native = join(staging, 'native');
   await mkdir(source);
   await buildMacNotificationAddon(native);
-  await writeFile(join(source, 'package.json'), JSON.stringify({ name: 'calendar-central-notification-check', version: '1.0.0', main: 'main.mjs', type: 'module' }));
+  await writeFile(join(source, 'package.json'), JSON.stringify({ name: 'calendar-hub-notification-check', version: '1.0.0', main: 'main.mjs', type: 'module' }));
   await copyFile(join(root, 'tests/fixtures/notification-status.mjs'), join(source, 'main.mjs'));
   await copyFile(join(root, 'desktop/mac-notifications.mjs'), join(source, 'mac-notifications.mjs'));
   const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   const [directory] = await packager({
     dir: source, out: join(staging, 'out'), platform: 'darwin', arch: process.arch, name,
-    electronVersion: manifest.devDependencies.electron, appBundleId: 'local.calendarcentral.notificationcheck',
+    electronVersion: manifest.devDependencies.electron, appBundleId: 'local.calendarhub.notificationcheck',
     extraResource: join(native, 'calendar-notifications.node'), extendInfo: { LSUIElement: true },
     asar: true, prune: false, osxSign: { identity: '-', identityValidation: false, continueOnError: false,
       optionsForFile: () => ({ hardenedRuntime: false, timestamp: 'none' }) },

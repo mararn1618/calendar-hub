@@ -1,10 +1,10 @@
-# Calendar Central
+# Calendar Hub
 
 ## Language
 
 **TickTick task**
 
-A to-do kept in TickTick. It can have a day, a time slot and a completion state. Checking it off in Calendar Central means completing the original task in TickTick.
+A to-do kept in TickTick. It can have a day, a time slot and a completion state. Checking it off in Calendar Hub means completing the original task in TickTick.
 
 **TickTick calendar**
 
@@ -26,7 +26,7 @@ The work calendar kept in Exchange. The existing workaround makes its meetings v
 
 The separate Google calendar containing event copies of TickTick tasks. The original tasks belong to TickTick.
 
-**Hide in Calendar Central**
+**Hide in Calendar Hub**
 
 A local visibility choice for an entry. The appointment stays on its source calendar and its guests receive no change.
 

@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { _electron as electron } from 'playwright-core';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-export const appPath = join(root, 'build/packaged', 'Calendar Central-darwin-' + process.arch, 'Calendar Central.app');
+export const appPath = join(root, 'build/packaged', 'Calendar Hub-darwin-' + process.arch, 'Calendar Hub.app');
 export async function until(check, message, timeout = 12_000) {
   const deadline = Date.now() + timeout;
   do {
@@ -51,7 +51,7 @@ export class DesktopDriver {
   async launch() {
     const args = this.configPath ? ['--calendar-test-config=' + this.configPath] : [];
     this.application = await electron.launch({
-      executablePath: join(appPath, 'Contents/MacOS/Calendar Central'), args, timeout: this.startupTimeout
+      executablePath: join(appPath, 'Contents/MacOS/Calendar Hub'), args, timeout: this.startupTimeout
     });
     this.page = await this.application.firstWindow({ timeout: this.startupTimeout });
     this.page.setDefaultTimeout(15_000);

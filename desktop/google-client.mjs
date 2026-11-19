@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 
-export function readGoogleDesktopClient(file) {
+export function readGoogleDesktopClient(
+  file = process.env.CALENDAR_HUB_GOOGLE_DESKTOP_CONFIG || process.env.CALENDAR_CENTRAL_GOOGLE_DESKTOP_CONFIG
+) {
   if (!file) return null;
   const { installed } = JSON.parse(readFileSync(file, 'utf8'));
   if (typeof installed?.client_id !== 'string' || !installed.client_id.trim() ||

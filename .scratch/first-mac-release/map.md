@@ -1,4 +1,4 @@
-# Specify Calendar Central for Mac
+# Specify Calendar Hub for Mac
 
 Label: wayfinder:map
 

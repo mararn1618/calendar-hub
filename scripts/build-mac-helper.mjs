@@ -30,7 +30,7 @@ async function nodeHeaders(staging) {
 }
 
 export async function buildMacNotificationAddon(output) {
-  const staging = await mkdtemp(join(tmpdir(), 'calendar-central-headers-'));
+  const staging = await mkdtemp(join(tmpdir(), 'calendar-hub-headers-'));
   try {
     const headers = await nodeHeaders(staging);
     await mkdir(output, { recursive: true });

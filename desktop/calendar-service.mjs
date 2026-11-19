@@ -232,7 +232,7 @@ export class CalendarService {
       if (target.secret !== previousSecret) throw new Error('This TickTick connection changed during sign-in. Open Calendars and try again.');
       if (existing && existing !== target) throw new Error('This TickTick token is already connected to another saved account.');
       if (!existing && !this.matchesTickTickAccount(target, discovered)) {
-        throw new Error('Calendar Central could not match the task lists to this saved connection. Sign in with the same TickTick account, or add a separate connection.');
+        throw new Error('Calendar Hub could not match the task lists to this saved connection. Sign in with the same TickTick account, or add a separate connection.');
       }
     }
     let connection = target ?? existing;

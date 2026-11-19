@@ -105,11 +105,11 @@ export async function verifyGoogleJourneys({ page, provider, dragTo, restart, re
   assert.equal(await menu.getByRole('menuitem', { name: 'Delete from Google' }).count(), 0);
   await menu.getByRole('menuitem', { name: 'View details' }).click();
   const details = page.getByRole('dialog', { name: 'Item details' });
-  await details.getByText('This item is read-only in Calendar Central.').waitFor();
+  await details.getByText('This item is read-only in Calendar Hub.').waitFor();
   assert.equal(await details.getByRole('button', { name: 'Save', exact: true }).count(), 0);
   await details.getByRole('button', { name: 'Done' }).click();
   menu = await menuFor(page, 'bmwmeeting');
-  await menu.getByRole('menuitem', { name: 'Hide in Calendar Central' }).click();
+  await menu.getByRole('menuitem', { name: 'Hide in Calendar Hub' }).click();
   await block(page, 'bmwmeeting').waitFor({ state: 'detached' });
   assert.deepEqual(await readEvent(provider, bmw, 'bmwmeeting'), originalBmw);
 

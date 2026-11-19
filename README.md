@@ -1,6 +1,6 @@
 # Calendar Hub
 
-**[Download Calendar Hub 0.5.1 for Mac](https://github.com/mararn1618/calendar-hub/releases/download/v0.5.1/Calendar-Hub-0.5.1-arm64.dmg)** · [All releases and previews](https://github.com/mararn1618/calendar-hub/releases)
+**[Download Calendar Hub 0.5.0 for Mac](https://github.com/mararn1618/calendar-hub/releases/download/v0.5.0/Calendar-Hub-0.5.0-arm64.dmg)** · [All releases and previews](https://github.com/mararn1618/calendar-hub/releases)
 
 A Mac calendar for TickTick tasks, Google appointments and read-only work meetings. Use Day, a Monday-to-Sunday Week or a rolling view of 1 to 31 days.
 

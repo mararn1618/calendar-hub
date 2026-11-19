@@ -29,4 +29,4 @@ Choose **Actions → Mac preview release → Run workflow** to test a branch and
 
 On an Apple Silicon Mac, `npm ci`, `npm run package:mac`, then `npm run package:dmg` produce the DMG and its checksum under `build/release/`. The mounted image contains the app, a shortcut to Applications and the bundled license notices.
 
-To verify a download, save the DMG and its checksum in the same folder. For version 0.5.1, run `shasum -a 256 -c Calendar-Hub-0.5.1-arm64.dmg.sha256`. From the matching source tag, `bash scripts/package-dmg.sh --verify /path/to/Calendar-Hub-0.5.1-arm64.dmg` also checks the mounted app’s version, architecture and signature.
+To verify a download, save the DMG and its checksum in the same folder. For version 0.5.0, run `shasum -a 256 -c Calendar-Hub-0.5.0-arm64.dmg.sha256`. From the matching source tag, `bash scripts/package-dmg.sh --verify /path/to/Calendar-Hub-0.5.0-arm64.dmg` also checks the mounted app’s version, architecture and signature.

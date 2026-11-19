@@ -29,6 +29,18 @@ function inCurrentMode(connection, id) {
   return kind === 'remainder' || (kind === 'custom' && groups.some(group => group.id === groupId));
 }
 
+function reminderWarning(failures, routes) {
+  if (!failures.size) return null;
+  const affected = new Set(routes.filter(({ source }) => failures.has(source.id) || failures.has(source.connectionId))
+    .map(route => route.calendarId));
+  const count = affected.size;
+  const scope = count ? ' for ' + count + (count === 1 ? ' calendar' : ' calendars') : '';
+  const summary = 'Could not refresh reminders' + scope + '.';
+  const reasons = new Set(failures.values());
+  const [reason] = reasons;
+  return reasons.size === 1 && reason && reason.length <= 160 ? summary + ' ' + reason : summary;
+}
+
 function requestsFor(routes, cache, now) {
   const until = horizon(now);
   const format = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
@@ -111,7 +123,7 @@ export class CalendarNotifications {
     this.lastApplied = serialized;
   }
 
-  async refresh({ read = 'all', calendarId, discover = false, authorized = false, checkedRange } = {}) {
+  async refresh({ read = 'all', calendarId, discover = false, authorized = false, checkedRange, writtenItems } = {}) {
     const enabled = Object.keys(this.data.notificationPreferences ?? {}).filter(id => this.data.notificationPreferences[id].enabled);
     const accounts = enabled.length ? this.data.connections.filter(connection => enabled.some(id => inCurrentMode(connection, id))) : [];
     try {
@@ -136,13 +148,13 @@ export class CalendarNotifications {
           try {
             this.service.updateSources(connection, await this.service.client(connection).sources());
             this.failures.delete(connection.id);
-          } catch (error) { this.failures.set(connection.id, connection.name + ': ' + error.message); }
+          } catch (error) { this.failures.set(connection.id, error.message); }
         }));
         this.service.profile.save();
       } else if (checkedRange) {
         for (const connection of accounts) {
           const failure = checkedRange.health.find(entry => entry.connectionId === connection.id && !entry.sourceId);
-          if (failure) this.failures.set(connection.id, connection.name + ': ' + failure.message);
+          if (failure) this.failures.set(connection.id, failure.message);
           else this.failures.delete(connection.id);
         }
       }
@@ -153,18 +165,18 @@ export class CalendarNotifications {
       const live = new Set([...accounts.map(account => account.id), ...routes.map(route => route.source.id)]);
       for (const id of this.failures.keys()) if (!live.has(id)) this.failures.delete(id);
       if (read !== 'none') await this.load(read === 'calendar' ? routes.filter(route => route.calendarId === calendarId) : routes,
-        accounts, read, checkedRange);
+        accounts, read, checkedRange, writtenItems);
       this.leads = new Map(routes.map(route => [route.source.id, route.leadMinutes]));
       const requests = requestsFor(routes, this.data.cache, Date.now());
       await this.replace(requests, read === 'all');
-      this.error = this.failures.size ? 'Some calendar reminders could not be refreshed. ' + [...this.failures.values()].join(' ') : null;
+      this.error = reminderWarning(this.failures, routes);
     } catch (error) {
       this.lastApplied = null;
       this.error = 'Could not update calendar reminders. ' + error.message;
     }
   }
 
-  async load(routes, accounts, read, checkedRange) {
+  async load(routes, accounts, read, checkedRange, writtenItems) {
     const now = Date.now(), until = horizon(now);
     const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const jobs = [];
@@ -183,7 +195,7 @@ export class CalendarNotifications {
       const recent = this.data.cache[source.id]?.checks.some(check => check.zone === zone && check.start <= start &&
         check.end >= end && now - Date.parse(check.checkedAt) < 5 * minute);
       if (read === 'changed' && recent) continue;
-      jobs.push({ source, start, end, zone });
+      jobs.push({ source, start, end, zone, writtenItems });
     }
     if (!jobs.length) return;
     await Promise.all(accounts.map(async connection => {
@@ -191,7 +203,7 @@ export class CalendarNotifications {
       if (!remaining.length) return;
       let client;
       try { client = this.service.client(connection); }
-      catch (error) { this.failures.set(connection.id, connection.name + ': ' + error.message); }
+      catch (error) { this.failures.set(connection.id, error.message); }
       const iterator = remaining.values();
       const worker = async () => {
         for (const job of iterator) {
@@ -207,6 +219,6 @@ export class CalendarNotifications {
 
   rememberCheck(source, check) {
     if (check.state === 'current') this.failures.delete(source.id);
-    else this.failures.set(source.id, source.name + ': ' + check.message);
+    else this.failures.set(source.id, check.message);
   }
 }

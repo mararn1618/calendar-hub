@@ -1,7 +1,7 @@
 {
   "name": "calendar-hub",
   "productName": "Calendar Hub",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "A Mac calendar for TickTick tasks, Google appointments and work meetings",
   "private": true,
   "type": "module",

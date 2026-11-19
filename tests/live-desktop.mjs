@@ -21,7 +21,7 @@ const report = {
   runId, startedAt: new Date().toISOString(), status: 'starting', stage: 'Launch the packaged Mac app',
   build: null, setup: {}, checks: [], disposableItems: {}, providers: {}, bmw: 'Exchange unconfigured',
 };
-const driver = new DesktopDriver({ evidenceDirectory: output, startupTimeout: 180_000 });
+const driver = new DesktopDriver({ evidenceDirectory: output, profileDirectory: process.env.CALENDAR_LIVE_PROFILE_DIR, startupTimeout: 180_000 });
 const probes = new Map(), destinations = {};
 let page, initialView, nativeDirectory, nativeExecutable, leaveOpen = false;
 let day, tomorrow, ticktickDetails;
@@ -210,11 +210,11 @@ async function changeTime(kind, id, date, start, end, edge) {
   await stage((edge ? 'Resize ' : 'Move ') + 'the disposable ' + kind + ' item');
   const current = await read(kind, id);
   need(!current.missing && !current.completed, 'The run-specific item is no longer editable.');
-  const eligible = page.locator('#timeline [data-item-id=' + JSON.stringify(id) + ']');
-  need(await eligible.count() === 1 && await item(kind, id).count() === 1, 'The drag target is ambiguous.');
+  const target = item(kind, id);
+  need(await target.count() === 1, 'The drag target is ambiguous.');
   const [hour, minute] = (edge ? end : start).split(':').map(Number);
-  await driver.dragTo({ itemId: id, day: date, hour, minute, edge });
-  await at(item(kind, id), date, start, end).waitFor({ timeout: 60_000 });
+  await driver.dragTo({ itemId: id, sourceId: destinations[kind].id, day: date, hour, minute, edge });
+  await at(target, date, start, end).and(page.locator('.calendar-item:not([data-write-state])')).waitFor({ timeout: 60_000 });
   const saved = await read(kind, id);
   need(!saved.allDay && Date.parse(saved.start) === time(date, start) && Date.parse(saved.end) === time(date, end), 'The source did not confirm the edited times.');
   await check(kind + (edge ? ' resize' : ' move') + ' on the original ID');
@@ -411,7 +411,7 @@ try {
   await closeProbes();
   await driver.close().catch(() => {});
   if (nativeDirectory) await rm(nativeDirectory, { recursive: true, force: true });
-  if (leaveOpen) {
+  if (leaveOpen && !driver.profileDirectory) {
     try { await execute('/usr/bin/open', [appPath]); }
     catch { report.applicationReopen = 'Open the packaged Calendar Hub app to finish setup.'; await saveReport(); }
   }

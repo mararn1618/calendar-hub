@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createTickTick } from '../desktop/providers/ticktick.mjs'
+import { CalendarService } from '../desktop/calendar-service.mjs'
 
 const source = { id: 'personal', name: 'Personal', writable: true }
 const inbox = { id: 'inbox', name: 'Inbox', writable: true }
@@ -385,6 +386,48 @@ test('creates in the selected list and retains the original encoding of timed po
   assert.equal(moved.start, moved.end)
   assert.equal(task.startDate, undefined)
   assert.equal(task.dueDate, '2026-10-25T13:00:00+0100')
+})
+
+test('a stale list version rejects the drag and returns the checked task without another list scan', async () => {
+  const summary = { ...original, etag: 'from-list' }
+  let detail = { ...original, title: 'Updated in TickTick', etag: 'from-detail' }
+  const { client, calls } = api(({ path, method, body }) => {
+    if (path === '/project') return response([source])
+    if (path === '/task/undone') return response([])
+    if (path.endsWith('/data')) return response({ tasks: [summary] })
+    if (method === 'GET') return response(detail)
+    detail = { ...body, etag: 'saved' }
+    return response(detail)
+  })
+  const profile = { data: { connections: [], sources: [], cache: {}, hidden: [], journal: [] },
+    open: () => ({}), seal: () => null, save() {} }
+  const service = new CalendarService(profile, { authorize: async () => ({}), identity: () => 'personal', client: () => client })
+  await service.run('connect', { provider: 'ticktick' })
+  const [item] = (await service.run('state', day)).items
+  calls.length = 0
+  const move = { start: '2026-10-25T11:00:00Z', end: '2026-10-25T12:00:00Z', allDay: false }
+  await assert.rejects(service.run('save', { ...item, ...move }), { code: 'CONFLICT' })
+  assert.deepEqual(calls.map(call => [call.method, call.path]), [['GET', '/project/personal/task/task1']])
+  const latest = (await service.run('state', { ...day, cachedOnly: true })).items[0]
+  assert.equal(latest.title, detail.title)
+  assert.notEqual(latest.version, item.version)
+  await assert.rejects(service.run('save', { ...item, ...move }), { code: 'CONFLICT' })
+  assert.equal(calls.length, 1)
+  const { item: confirmed } = await service.run('save', { ...latest, ...move, viewRange: day })
+  assert.deepEqual(calls.slice(1).map(call => [call.method, call.path]), [
+    ['GET', '/project/personal/task/task1'], ['POST', '/task/task1'],
+  ])
+  assert.equal(confirmed.start, '2026-10-25T11:00:00.000Z')
+  assert.equal(confirmed.title, 'Updated in TickTick')
+  assert.equal(detail.content, original.content)
+  assert.deepEqual(detail.items, original.items)
+})
+
+test('a throttled detail read reports a request limit and sends no write', async () => {
+  const { client, calls } = api(({ path }) => path.endsWith('/data') ? response({ tasks: [original] }) : response(null, 429))
+  const [item] = await client.items(source, day.start, day.end)
+  await assert.rejects(client.update(source, item, item), { code: 'RATE_LIMITED', status: 429 })
+  assert.deepEqual(calls.map(call => call.method), ['GET', 'GET'])
 })
 
 test('never retries an unconfirmed write or infers a created task ID from its title', async () => {

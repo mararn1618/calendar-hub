@@ -222,6 +222,9 @@ main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .calendar-item:hover { background: color-mix(in srgb,var(--source-color) 22%,var(--surface)); }
 .calendar-item:focus-visible { outline-offset: -1px; z-index: 3; }
 .calendar-item[data-editable=true] { cursor: grab; }
+.calendar-item[data-write-state="pending"] { opacity: .76; border-style: dashed; color: var(--ink); background: color-mix(in srgb,var(--source-color) 10%,var(--surface)); cursor: progress; }
+.calendar-item[data-write-state="unconfirmed"] { border-style: dashed; border-left-color: var(--warning-ink); }
+.calendar-item[data-write-state="unconfirmed"] .item-title::before { content: "!"; color: var(--warning-ink); margin-right: 4px; }
 .item-title { display: block; width: 100%; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-box { display: inline-block; vertical-align: -1px; margin-right: 5px; width: 10px; height: 10px; line-height: 8px; border: 1.2px solid currentColor; border-radius: 3px; font-size: 9px; }
 .calendar-item.completed .item-title { text-decoration: line-through; }
@@ -282,6 +285,11 @@ dialog::backdrop { background: #00000040; }
 .dialog-footer .primary, .dialog-footer .destructive { min-width: 65px; }
 .help { font-size: 12px; line-height: 1.45; color: var(--muted); }
 .settings-subhead { font-size: 13px; font-weight: 650; }
+.sync-issue-reason { margin: 5px 0; }
+.sync-issue-sources { margin: 0 0 12px; padding: 0; list-style: none; }
+.sync-issue-sources li { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; border-bottom: 1px solid var(--line-soft); }
+.sync-issue-sources li > span:first-child { overflow-wrap: anywhere; }
+.sync-issue-sources .help { flex: none; }
 .appearance-settings { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .appearance-options { display: flex; align-items: center; gap: 12px; }
 .appearance-options label { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; cursor: pointer; }

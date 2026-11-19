@@ -3,6 +3,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 const operations = ['state', 'setAppearance', 'connect', 'renameConnection', 'macAccountCalendars', 'macGoogleCalendars', 'openInternetAccounts', 'disconnect', 'setSource',
   'configureTickTick', 'setTickTickCalendarVisible', 'setCalendarColor', 'setCalendarNotifications', 'save', 'complete', 'remove', 'hide', 'restore', 'acknowledge'];
 const calendar = {};
+calendar.writeItem = (operation, input) => {
+  if (!['save', 'complete', 'remove'].includes(operation)) throw new Error('Choose a calendar item action.');
+  return ipcRenderer.invoke('calendar:' + operation, input);
+};
 for (const operation of operations) {
   calendar[operation] = async input => {
     const reply = await ipcRenderer.invoke('calendar:' + operation, input);

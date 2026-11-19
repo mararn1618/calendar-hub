@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DesktopDriver, until } from './desktop-driver.mjs';
+import { assertPending, assertSettled, withHeldWrite } from './pending-edit-journeys.mjs';
 import { drawTimedAppointment } from './drag-create-journeys.mjs';
 import { startMacCalendarFixture } from './fixtures/mac-calendar.mjs';
 import { chooseCalendarColor, colorControl, displayedColor } from './calendar-color-journeys.mjs';
@@ -139,10 +140,25 @@ export async function verifyMacOnboarding({ temporary, evidence }) {
     assert.equal(Date.parse(updated.end) - Date.parse(updated.start), 30 * 60_000);
     assert.notEqual(updated.version, created.version);
 
+    const nativeCard = item(title);
+    const isUpdate = call => call.action === 'update' && call.input.original.id === created.id;
+    const drag = options => driver.dragTo({ itemId: created.id, day, ...options });
+    await withHeldWrite(fixture.controls, isUpdate, () => drag({ hour: 12, minute: 30 }), async () => {
+      await assertPending(nativeCard, day, '12:30', '13:00');
+      assert.equal(Date.parse(fixture.events.get(created.id).start), Date.parse(day + 'T12:00'));
+      await driver.screenshot(page, 'mac-google-move-awaiting-save');
+    });
+    await assertSettled(nativeCard, day, '12:30', '13:00');
+    await withHeldWrite(fixture.controls, isUpdate, () => drag({ edge: 'end', hour: 13, minute: 30 }), async () => {
+      await assertPending(nativeCard, day, '12:30', '13:30');
+    });
+    await assertSettled(nativeCard, day, '12:30', '13:30');
+    assert.equal(Date.parse(fixture.events.get(created.id).end), Date.parse(day + 'T13:30'));
+
     page = await driver.restart();
     dialog = page.locator('dialog[open]');
     await item(title).waitFor();
-    assert.match(await item(title).getAttribute('aria-description'), /12:00.*Team Google/);
+    assert.match(await item(title).getAttribute('aria-description'), /12:30.*Team Google/);
     assert.equal(await displayedColor(item(title)), '#5522cc');
     assert.equal(await displayedColor(item('BMW planning meeting')), '#ff6123');
     const nativeReminders = [
@@ -207,7 +223,8 @@ export async function verifyMacOnboarding({ temporary, evidence }) {
     for (const call of reads) assert.equal(call.accountId, calendars.find(row => row.id === call.calendarId)?.accountId);
     const writes = fixture.calls.filter(call => ['create', 'update'].includes(call.action));
     assert.deepEqual(writes.map(call => [call.action, call.route, call.accountId, call.calendarId]), [
-      ['create', 'google', team.accountId, team.id], ['update', 'google', team.accountId, team.id]
+      ['create', 'google', team.accountId, team.id], ['update', 'google', team.accountId, team.id],
+      ['update', 'google', team.accountId, team.id], ['update', 'google', team.accountId, team.id]
     ]);
     assert.deepEqual(driver.errors, [], 'Unexpected renderer errors during Mac account onboarding');
   } catch (error) {

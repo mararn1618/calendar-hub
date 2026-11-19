@@ -14,6 +14,7 @@ import { verifyMacOnboarding } from './mac-onboarding-e2e.mjs';
 import { verifyBrowserAccounts } from './multi-account-journeys.mjs';
 import { verifyNotificationJourneys } from './notification-journeys.mjs';
 import { verifyDragCreateJourneys } from './drag-create-journeys.mjs';
+import { verifyPendingEdits } from './pending-edit-journeys.mjs';
 import { verifyCalendarColors } from './calendar-color-journeys.mjs';
 
 const project = fileURLToPath(new URL('../', import.meta.url));
@@ -193,17 +194,13 @@ async function verifyAppearance(page) {
   return page;
 }
 
-try {
-  execFileSync('codesign', ['--verify', '--deep', '--strict', appPath]);
-  let page = await driver.launch();
-  for (const [name, perform] of [['Connect and select sources', onboard], ['Day, Week and rolling views during refresh and scrolling', navigate], ['Create at both sources and restart', createBoth]]) {
+async function verifyRemainingJourneys(page, helpers) {
+  for (const [name, perform] of [['Day, Week and rolling views during refresh and scrolling', navigate], ['Create at both sources and restart', createBoth]]) {
     console.log(name); page = await perform(page) ?? page; report.passed.push(name);
   }
   console.log('Calendar appearance and restart');
   page = await verifyAppearance(page);
   report.passed.push('Light and Dark apply from settings and the saved appearance survives restart');
-  const helpers = { provider, refresh, createItem, restart: () => driver.restart(), dragTo: options => driver.dragTo(options),
-    screenshot: (page, name) => driver.screenshot(page, name) };
   console.log('Calendar colors and contrast');
   page = await verifyCalendarColors({ ...helpers, page });
   report.passed.push('Pick and reset local calendar colors with keyboard and swatch, including contrast, timed and all-day items, hiding and restart');
@@ -230,6 +227,20 @@ try {
   console.log('Two Google and two TickTick browser accounts');
   await verifyBrowserAccounts({ temporary, evidence });
   report.passed.push('Browser sign-in to two Google and two TickTick accounts, with overlapping lists and calendars, separate writes, reconnect and restart');
+}
+
+try {
+  execFileSync('codesign', ['--verify', '--deep', '--strict', appPath]);
+  const page = await driver.launch();
+  await onboard(page);
+  report.passed.push('Connect and select sources');
+  const helpers = { provider, refresh, createItem, restart: () => driver.restart(), dragTo: options => driver.dragTo(options),
+    screenshot: (page, name) => driver.screenshot(page, name) };
+  console.log('Drag and resize while the provider response is held');
+  await verifyPendingEdits({ page, ...helpers });
+  report.passed.push('Pending calendar edits, permission review, rejected writes and scoped TickTick requests');
+  if (!process.argv.includes('--pending-edits')) await verifyRemainingJourneys(page, helpers);
+  assert.deepEqual(driver.errors, [], 'Unexpected renderer errors');
   report.status = 'passed';
 } catch (error) {
   report.status = 'failed'; report.error = error.message;

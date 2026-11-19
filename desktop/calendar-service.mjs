@@ -12,6 +12,7 @@ const currentTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 const tickTickInboxId = sources => sources.find(source => isTickTickInbox(source) && source.id !== 'inbox')?.id;
 const originalInboxItem = items => items?.find(item => item._ticktick?.projectId && item._ticktick.projectId !== 'inbox');
 const preferenceCacheAge = 5 * 60_000;
+const scheduleOf = ({ start, end, allDay }) => ({ start, end, allDay });
 
 function currentHealth(source, connection, checkedAt) {
   return { connectionId: connection.id, sourceId: source.id, state: 'current', checkedAt,
@@ -86,6 +87,8 @@ export class CalendarService {
     this.clients = new Map();
     this.tickTickCalendars = new Map();
     this.activeWriteIds = new Set();
+    this.queuedRefreshes = new Set();
+    this.snapshotId = 0;
     this.notifications = new CalendarNotifications(this, providers.notificationCenter);
     this.queue = Promise.resolve();
     let migrated = false;
@@ -114,13 +117,23 @@ export class CalendarService {
           pending.preferencesOnly === preferencesOnly && pending.refreshNotifications === refreshNotifications) {
         return pending.result;
       }
-      const result = this.enqueue(() => this.state(input));
+      const result = this.enqueueRefresh(writtenItems => this.state(input, writtenItems));
       this.pendingState = { start, end, zone, preferencesOnly, refreshNotifications, result };
       const clear = () => { if (this.pendingState?.result === result) this.pendingState = null; };
       result.then(clear, clear);
       return result;
     }
+    if (operation === 'refreshNotifications') return this.enqueueRefresh(writtenItems => this.notifications.refresh({ discover: true, writtenItems }));
     return this.enqueue(() => this[operation](input));
+  }
+
+  enqueueRefresh(work) {
+    const writtenItems = new Map();
+    this.queuedRefreshes.add(writtenItems);
+    return this.enqueue(async () => {
+      try { return await work(writtenItems); }
+      finally { this.queuedRefreshes.delete(writtenItems); }
+    });
   }
 
   enqueue(work) {
@@ -440,7 +453,6 @@ export class CalendarService {
   }
 
   setCalendarNotifications(input) { return this.notifications.set(input); }
-  refreshNotifications() { return this.notifications.refresh({ discover: true }); }
 
   setTickTickCalendarVisible({ connectionId, calendarId, visible }) {
     const connection = this.tickTickConnection('ticktick', connectionId);
@@ -512,17 +524,19 @@ export class CalendarService {
     return error ? [error, ...checks] : checks;
   }
 
-  async refreshSource(source, connection, client, { start, end, zone }) {
+  async refreshSource(source, connection, client, { start, end, zone, writtenItems }) {
     const cache = this.cache(source.id);
     try {
       if (!client) throw new Error('Reconnect this account to refresh.');
-      const items = await client.items(source.remote, start, end);
+      const fetched = await client.items(source.remote, start, end);
+      const preserved = writtenItems?.get(source.id);
+      const items = preserved ? fetched.filter(item => !preserved.has(item.id)) : fetched;
       if (source.provider === 'ticktick' && !connection.tickTickInboxId && isTickTickInbox(source.remote)) {
         const item = originalInboxItem(items);
         if (item) connection.tickTickInboxId = item._ticktick.projectId;
       }
       const ids = new Set(items.map(item => item.id));
-      cache.items = cache.items.filter(item => !ids.has(item.id) && !overlaps(item, start, end)).concat(items);
+      cache.items = cache.items.filter(item => preserved?.has(item.id) || !ids.has(item.id) && !overlaps(item, start, end)).concat(items);
       this.notifications.observeTickTickItems(source, items);
       const checkedAt = new Date().toISOString();
       cache.checks = [{ start, end, zone, checkedAt }, ...cache.checks.filter(range => range.start !== start || range.end !== end)].slice(0, 30);
@@ -534,7 +548,7 @@ export class CalendarService {
     }
   }
 
-  async state({ start, end, cachedOnly = false, preferencesOnly = false, refreshNotifications = false }) {
+  async state({ start, end, cachedOnly = false, preferencesOnly = false, refreshNotifications = false }, writtenItems) {
     validateRange(start, end);
     if (cachedOnly === true) return this.cachedState(start, end);
     const legacy = this.data.connections.find(legacyMacGoogle);
@@ -556,15 +570,26 @@ export class CalendarService {
     }
     const range = this.lastRange;
     const health = (await Promise.all(this.data.connections.map(connection =>
-      this.refreshConnection(connection, range, preferencesOnly === true)))).flat();
+      this.refreshConnection(connection, { ...range, writtenItems }, preferencesOnly === true)))).flat();
     await this.notifications.refresh({ read: refreshNotifications ? 'all' : preferencesOnly ? 'none' : 'changed',
-      checkedRange: preferencesOnly ? undefined : { start, end, health } });
+      checkedRange: preferencesOnly ? undefined : { start, end, health }, writtenItems });
     this.profile.save();
     range.visible = new Set(this.data.sources.filter(source => source.selected).map(source => source.id));
     return this.cachedState(start, end, health);
   }
 
-  cachedState(start, end, health = []) {
+  cachedHealth(start, end, zone) {
+    const range = this.lastRange;
+    if (range?.start !== start || range.end !== end || range.zone !== zone) return [];
+    return this.data.connections.flatMap(connection => {
+      const error = range.discoveryErrors.get(connection.id);
+      const checks = this.connectionSources(connection.id).filter(source => source.selected)
+        .map(source => range.checks.get(source.id)?.health).filter(Boolean);
+      return error ? [error, ...checks] : checks;
+    });
+  }
+
+  cachedState(start, end, health) {
     const zone = currentTimeZone();
     const legacyIds = new Set(this.data.connections.filter(legacyMacGoogle).map(row => row.id));
     const sources = this.data.sources.map(({ remote, remoteId, localReadOnly, ...source }) => {
@@ -595,7 +620,8 @@ export class CalendarService {
       ticktickCalendars: this.data.connections.flatMap(connection => this.tickTickCalendars.get(connection.id) ?? [])
         .map(calendar => this.withCalendarColor(calendar)),
       notificationPreferences: this.notifications.preferences(), notificationError: this.notifications.error,
-      sources, items, rangeCovered, hidden: this.data.hidden, health,
+      snapshotId: ++this.snapshotId, sources, items, rangeCovered, hidden: this.data.hidden,
+      health: health ?? this.cachedHealth(start, end, zone),
       uncertain: this.data.journal.filter(entry => !this.activeWriteIds.has(entry.id))
     };
   }
@@ -613,16 +639,65 @@ export class CalendarService {
     this.profile.save();
   }
 
-  acknowledge({ id }) {
+  async acknowledge({ id }) {
+    const record = this.data.journal.find(entry => entry.id === id);
     this.data.journal = this.data.journal.filter(entry => entry.id !== id);
     this.profile.save();
+    const source = this.data.sources.find(entry => entry.id === record?.sourceId);
+    if (source && this.lastRange) {
+      const connection = this.connection(source.connectionId);
+      await this.reconcileSource(source, connection);
+      this.profile.save();
+      await this.notifications.refresh({ read: 'none' });
+    }
   }
 
   save(input) { return this.write(input.id ? 'update' : 'create', input); }
   complete(input) { return this.write('complete', input); }
   remove(input) { return this.write('remove', input); }
 
+  preserveForQueuedRefreshes(sourceId, ...ids) {
+    for (const writtenItems of this.queuedRefreshes) {
+      const preserved = writtenItems.get(sourceId) ?? new Set();
+      for (const id of ids) if (id) preserved.add(id);
+      writtenItems.set(sourceId, preserved);
+    }
+  }
+
+  replaceCachedItem(source, original, item) {
+    const cache = this.cache(source.id);
+    cache.items = cache.items.filter(entry => entry.id !== original?.id && entry.id !== item?.id);
+    if (item?.id) cache.items.push(item);
+    if (item || original) this.notifications.observeTickTickItems(source, [item ?? original]);
+  }
+
+  async reconcileSource(source, connection, client) {
+    const range = this.lastRange;
+    if (!client) {
+      try { client = this.client(connection); }
+      catch { /* refreshSource keeps the cached range when the account is unavailable. */ }
+    }
+    const health = await this.refreshSource(source, connection, client, range);
+    range.checks.set(source.id, { health, at: Date.now() });
+  }
+
+  async reconcileWriteError(error, source, connection, client, original) {
+    if (error.code !== 'CONFLICT' && error.code !== 'UNCERTAIN') return;
+    const checkedItem = original && Object.hasOwn(error, 'currentItem');
+    if (checkedItem) {
+      this.replaceCachedItem(source, original, error.currentItem);
+    } else {
+      if (!this.lastRange) return;
+      await this.reconcileSource(source, connection, client);
+    }
+    this.profile.save();
+    await this.notifications.refresh({ read: 'none' });
+    if (checkedItem) this.preserveForQueuedRefreshes(source.id, original.id);
+  }
+
   async write(action, input) {
+    const view = input.viewRange;
+    if (view) validateRange(view.start, view.end);
     const source = this.source(input.sourceId);
     const integration = this.integration(source.provider);
     if (!source.selected || !source.writable || source.readOnly || integration?.readOnly) throw new Error('This calendar is read-only or unselected.');
@@ -631,7 +706,9 @@ export class CalendarService {
     const cache = this.cache(source.id);
     const original = action === 'create' ? null : cache.items.find(item => item.id === input.id);
     if (action !== 'create') {
-      if (!original || original.version !== input.version || original.completed) throw new Error('This item changed. Refresh and review it before saving.');
+      if (!original || original.version !== input.version || original.completed) {
+        throw Object.assign(new Error('This item changed. Review it before saving.'), { code: 'CONFLICT' });
+      }
       const permission = { update: 'canEdit', complete: 'canComplete', remove: 'canDelete' }[action];
       if (!original[permission]) throw new Error('This action is unavailable for this item.');
       if (original.hasAttendees && !input.notify) throw new Error('Review the update to guests before saving.');
@@ -647,6 +724,11 @@ export class CalendarService {
     }
     const record = { id: randomUUID(), sourceId: source.id, connectionId: connection.id, targetId: original?.id,
       title, kind: action, startedAt: new Date().toISOString(), message: 'Check the source before repeating this change.' };
+    if (action === 'update' && (original.allDay !== draft.allDay || Date.parse(original.start) !== Date.parse(draft.start) ||
+        Date.parse(original.end) !== Date.parse(draft.end))) {
+      record.originalSchedule = scheduleOf(original);
+      record.proposedSchedule = scheduleOf(draft);
+    }
     this.data.journal.push(record);
     this.profile.save();
     let result;
@@ -660,15 +742,17 @@ export class CalendarService {
       if (error.code === 'UNCERTAIN') Object.assign(record, { message: error.message, providerId: error.providerId });
       else this.data.journal = this.data.journal.filter(entry => entry.id !== record.id);
       this.profile.save();
+      await this.reconcileWriteError(error, source, connection, client, original);
       throw error;
     } finally {
       this.activeWriteIds.delete(record.id);
     }
-    cache.items = cache.items.filter(item => item.id !== (original?.id ?? result?.id));
-    if ((action === 'create' || action === 'update') && result?.id) cache.items.push(result);
-    if (result?.id || original) this.notifications.observeTickTickItems(source, [result ?? original]);
+    const saved = action === 'create' || action === 'update' ? result : null;
+    this.replaceCachedItem(source, original, saved);
     this.data.journal = this.data.journal.filter(entry => entry.id !== record.id);
     this.profile.save();
     await this.notifications.refresh({ read: 'none' });
+    this.preserveForQueuedRefreshes(source.id, original?.id, result?.id);
+    if (view) return { state: this.cachedState(view.start, view.end), item: saved?.id ? publicItem(saved, source) : null };
   }
 }

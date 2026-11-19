@@ -168,6 +168,22 @@ test('TickTick notifications follow inclusion, grouping and renames independentl
   assert.equal(reads.length, calls);
 });
 
+test('a TickTick reminder outage gives one warning for the calendar and clears after recovery', async t => {
+  const { calendars, offline, connect, view, bell, run } = workspace(t);
+  calendars.ticktick = Array.from({ length: 54 }, (_, index) => list('Private list ' + (index + 1)));
+  await connect('ticktick');
+  const [account] = (await view()).ticktickCalendars;
+  for (const source of calendars.ticktick) offline.add(source.id);
+  await bell(account.id, true);
+  const message = (await view()).notificationError;
+  assert.match(message, /1 calendar\b/);
+  assert.equal(message.match(/Source offline/g)?.length, 1);
+  assert.doesNotMatch(message, /Private list/);
+  offline.clear();
+  await run('refreshNotifications');
+  assert.equal((await view()).notificationError, null);
+});
+
 test('offline sources keep future notices while other calendars update, mute or expire', async t => {
   const { connect, view, center, queue, rows, reads, offline, run, bell, restart } = workspace(t);
   await connect('google');

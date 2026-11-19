@@ -1,6 +1,6 @@
 # Calendar Hub
 
-**[Download Calendar Hub 0.5.0 for Mac](https://github.com/mararn1618/calendar-hub/releases/download/v0.5.0/Calendar-Hub-0.5.0-arm64.dmg)** · [All releases and previews](https://github.com/mararn1618/calendar-hub/releases)
+**[Download Calendar Hub 0.5.1 for Mac](https://github.com/mararn1618/calendar-hub/releases/download/v0.5.1/Calendar-Hub-0.5.1-arm64.dmg)** · [All releases and previews](https://github.com/mararn1618/calendar-hub/releases)
 
 A Mac calendar for TickTick tasks, Google appointments and read-only work meetings. Use Day, a Monday-to-Sunday Week or a rolling view of 1 to 31 days.
 
@@ -21,6 +21,10 @@ The rolling view shows your chosen length, for example **Next 5 Days**. When you
 ## Create an appointment
 
 Drag from the start time to the end time on an empty part of the calendar. The preview snaps to 15 minutes. Release, enter a title, choose a Google calendar and press **Save**. You can drag across midnight or across several dates in the all-day row. **Escape** cancels the selection. Use **New item** to create a TickTick task or enter an appointment using the keyboard.
+
+Drag an existing task or appointment to move it. Drag its top or bottom edge to resize it. The entry stays at the time you chose and looks muted until the provider confirms. A rejected edit returns to the saved time. If the connection drops before the outcome is known, open **Review writes** to check the item.
+
+If several TickTick lists fail to refresh, the banner shows how many are affected. Open **Sync details** to see the lists and their last check.
 
 ## Run on this Mac
 

@@ -4,6 +4,7 @@ import { showMacAccountPicker, showRetainedCalendars } from './mac-account-picke
 import { createTickTickEditor } from './ticktick-editor.js';
 import { listCount, tickTickSections } from './ticktick-lists.js';
 import { appearanceSettings } from './appearance.js';
+import { syncIssues } from './sync-issues.js';
 
 const dateFormat = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' };
 const asISO = value => new Date(value).toISOString();
@@ -62,6 +63,13 @@ function spanDescription(data) {
   return start + ' – ' + end + ' ' + zoneOffset(data.end);
 }
 
+function compareSchedules(before, after, beforeLabel, afterLabel) {
+  const times = element('dl', 'review-times');
+  times.append(element('dt', '', beforeLabel), element('dd', '', spanDescription(before)),
+    element('dt', '', afterLabel), element('dd', '', spanDescription(after)));
+  return times;
+}
+
 export function createPanels(actions) {
   const dialog = $('#dialog');
   const menu = $('#context-menu');
@@ -82,6 +90,7 @@ export function createPanels(actions) {
   const sourceOf = item => state().sources.find(source => source.id === item.sourceId);
   const viaAppleCalendar = data => state().connections.some(connection => connection.id === sourceOf(data)?.connectionId && connection.provider === 'google' && connection.route === 'mac');
   const latestItem = item => state().items.find(entry => entry.id === item.id && entry.sourceId === item.sourceId);
+  const hasUnconfirmedWrite = item => state().uncertain.some(row => row.sourceId === item.sourceId && row.targetId === item.id);
   const hasPendingCreate = ({ sourceId, title }) => state().uncertain.some(row =>
     row.kind === 'create' && row.sourceId === sourceId && row.title === title);
 
@@ -119,7 +128,7 @@ export function createPanels(actions) {
     const header = element('header', 'dialog-head');
     const heading = element('h2', '', title);
     heading.id = 'dialog-title';
-    header.append(heading, iconButton('Close', 'close', close));
+    header.append(heading, iconButton('Close', 'close', options.dismiss || close));
     body = element('div', 'dialog-body');
     message = element('div', 'form-message');
     message.setAttribute('role', 'alert');
@@ -149,22 +158,28 @@ export function createPanels(actions) {
   }
 
   async function write(method, payload, success, failed) {
-    if (busy) return;
-    busy = true;
-    message && (message.hidden = true);
-    const controls = dialog.open ? [...dialog.querySelectorAll('button:enabled, input:enabled, select:enabled')] : [];
+    const owner = dialog.open && body;
+    if (owner && busy) return;
+    if (owner) {
+      busy = true;
+      message.hidden = true;
+      dialog.setAttribute('aria-busy', 'true');
+    }
+    const controls = owner ? [...dialog.querySelectorAll('button:enabled, input:enabled, select:enabled')] : [];
     controls.forEach(node => { node.disabled = true; });
-    dialog.setAttribute('aria-busy', 'true');
     try {
       await actions.mutate(method, payload);
-      success();
+      success(Boolean(owner && dialog.open && body === owner));
     } catch (error) {
       const text = errorText(error);
-      if (failed) failed(text);
-      else warning(text, dialog.open ? undefined : { label: 'Refresh', action: actions.refresh });
+      if (!owner || !dialog.open || body !== owner) actions.report(text, { label: 'Refresh', action: actions.refresh });
+      else if (failed) failed(text);
+      else warning(text);
     } finally {
-      busy = false;
-      dialog.removeAttribute('aria-busy');
+      if (owner) {
+        busy = false;
+        dialog.removeAttribute('aria-busy');
+      }
       controls.forEach(node => { node.disabled = false; });
     }
   }
@@ -172,6 +187,35 @@ export function createPanels(actions) {
     event.preventDefault();
     if (!busy) escapeAction?.();
   });
+
+  function syncDetails() {
+    const scroll = dialog.open && kind === 'sync-details' ? body.scrollTop : 0;
+    const model = state();
+    const sources = new Map(model.sources.map(source => [source.id, source]));
+    const { accounts } = syncIssues(model);
+    panel('sync-details', 'Sync details', { wide: true });
+    if (!accounts.length) body.append(element('p', 'help', 'No current sync errors.'));
+    for (const { label, tickTick, entries } of accounts) {
+      const section = element('section', 'sync-issue-account');
+      section.append(element('h3', 'settings-subhead', label));
+      for (const [reason, affected] of Map.groupBy(entries, entry => entry.message || 'Could not refresh.')) {
+        section.append(element('p', 'sync-issue-reason', reason));
+        const list = element('ul', 'sync-issue-sources');
+        for (const entry of affected) {
+          const source = sources.get(entry.sourceId);
+          const name = source ? [source.folder?.name, source.name].filter(Boolean).join(' / ') : tickTick ? 'TickTick list directory' : 'Calendar directory';
+          const detail = entry.state === 'stale' && entry.checkedAt ? 'Last checked ' + localTime(entry.checkedAt) : 'Unavailable';
+          const row = element('li');
+          row.append(element('span', '', name), element('span', 'help', detail));
+          list.append(row);
+        }
+        section.append(list);
+      }
+      body.append(section);
+    }
+    footer.append(button('Done', close, 'primary'));
+    body.scrollTop = scroll;
+  }
 
   function settings() {
     const scroll = dialog.open && kind === 'settings' ? body.scrollTop : 0;
@@ -629,6 +673,7 @@ export function createPanels(actions) {
   function edit(item, defaults = {}) {
     const source = item && sourceOf(item);
     if (item && !source) return;
+    if (item && hasUnconfirmedWrite(item)) return uncertainItems();
     const allowed = item ? editable(item, source) : true;
     const appointment = !item && defaults.kind === 'appointment';
     const choices = item ? [source] : state().sources.filter(choice =>
@@ -843,8 +888,46 @@ export function createPanels(actions) {
   }
 
   function save(item, data) {
-    if (item && sourceOf(item)?.itemKind === 'event' && (item.hasAttendees || item.recurring)) return review('save', item, data);
+    if (needsScheduleReview(item)) return review('save', item, data);
     submitSave(item, data);
+  }
+  function needsScheduleReview(item) {
+    return item && sourceOf(item)?.itemKind === 'event' && (item.hasAttendees || item.recurring);
+  }
+  function openLatest(item) {
+    return { label: 'Open latest item', action: () => {
+      const latest = latestItem(item);
+      if (latest) edit(latest);
+      else { close(); actions.report('This item is no longer in the displayed calendars.'); }
+    } };
+  }
+  function reschedule(item, change) {
+    const source = sourceOf(item);
+    if (!source?.selected || !editable(item, source)) return;
+    if (hasUnconfirmedWrite(item)) return uncertainItems();
+    const needsApproval = needsScheduleReview(item);
+    const schedule = actions.beginSchedule(item, change, needsApproval);
+    if (!schedule) return;
+    const data = { ...itemKey(item), title: item.title, ...change };
+    if (needsApproval) return review('save', item, data, schedule);
+    void persistSchedule(item, data, schedule);
+  }
+  async function persistSchedule(item, data, schedule) {
+    try {
+      await actions.mutate('save', data);
+      actions.toast(viaAppleCalendar(data) ? 'Saved in Apple Calendar for sync to Google' : 'Changes saved');
+    } catch (error) {
+      if (!hasUnconfirmedWrite(item)) {
+        const refresh = { label: 'Refresh', action: actions.refresh };
+        if (error.code === 'UNCERTAIN') {
+          schedule.unconfirmed();
+          actions.report('The schedule change for “' + item.title + '” is unconfirmed. ' + errorText(error), refresh);
+          return;
+        }
+        actions.report('Could not save the schedule for “' + item.title + '”. ' + errorText(error), latestItem(item) ? openLatest(item) : refresh);
+      }
+    }
+    schedule.finish();
   }
   function submitSave(item, data) {
     write('save', data, () => { close(); actions.toast(viaAppleCalendar(data) ? 'Saved in Apple Calendar for sync to Google' : item ? 'Changes saved' : 'Item created'); }, text => {
@@ -852,26 +935,20 @@ export function createPanels(actions) {
         uncertainItems();
         return;
       }
-      const retry = item ? { label: 'Open latest item', action: () => {
-        const latest = latestItem(item);
-        if (latest) edit(latest);
-        else { close(); actions.report('This item is no longer in the displayed calendars.'); }
-      } } : undefined;
-      warning(text, retry);
+      warning(text, item && openLatest(item));
     });
   }
-  function review(method, item, data) {
-    const back = returnToPanel();
+  function review(method, item, data, schedule) {
+    const back = schedule ? () => { close(); schedule.finish(); } : returnToPanel();
     const remove = method === 'remove';
     const source = sourceOf(item);
     const brand = brandName(source.provider);
-    panel('review', remove ? 'Delete from ' + brand + '?' : 'Review ' + brand + ' event change', { back });
+    panel('review', remove ? 'Delete from ' + brand + '?' : 'Review ' + brand + ' event change', { back, dismiss: schedule && back });
     body.append(element('strong', 'details-title', item.title), calendarContext(source));
     if (remove) {
       body.append(element('p', '', 'Delete this event from its ' + brand + ' calendar?'), element('p', 'detail-dates', spanDescription(item)));
     } else {
-      const times = element('dl', 'review-times');
-      times.append(element('dt', '', 'Current'), element('dd', '', spanDescription(item)), element('dt', '', 'New'), element('dd', '', spanDescription(data)));
+      const times = compareSchedules(item, data, 'Current', 'New');
       if (data.title !== item.title) times.append(element('dt', '', 'New title'), element('dd', '', data.title));
       body.append(times);
     }
@@ -892,7 +969,11 @@ export function createPanels(actions) {
       if (checks.some(control => !control.checked)) return;
       const payload = { ...data, notify: Boolean(item.hasAttendees), occurrence: Boolean(item.recurring) };
       if (remove) write('remove', payload, () => { close(); actions.toast(viaAppleCalendar(item) ? 'Deleted in Apple Calendar for sync to Google' : 'Deleted from ' + brand); });
-      else submitSave(item, payload);
+      else if (schedule) {
+        close();
+        schedule.approve();
+        void persistSchedule(item, payload, schedule);
+      } else submitSave(item, payload);
     }, remove ? 'destructive' : 'primary');
     const evaluate = () => { confirm.disabled = checks.some(control => !control.checked); };
     checks.forEach(control => control.addEventListener('change', evaluate));
@@ -901,10 +982,10 @@ export function createPanels(actions) {
   }
 
   function hide(item) {
-    write('hide', { id: item.id, sourceId: item.sourceId }, () => { close(); actions.toast('Hidden in Calendar Hub'); });
+    write('hide', { id: item.id, sourceId: item.sourceId }, owned => { if (owned) close(); actions.toast('Hidden in Calendar Hub'); });
   }
   function complete(item) {
-    if (completable(item, sourceOf(item))) write('complete', itemKey(item), () => { close(); actions.toast('Task completed in ' + brandName(sourceOf(item)?.provider)); });
+    if (completable(item, sourceOf(item))) write('complete', itemKey(item), owned => { if (owned) close(); actions.toast('Task completed in ' + brandName(sourceOf(item)?.provider)); });
   }
   function hiddenItems() {
     panel('hidden', 'Hidden items', { wide: true });
@@ -922,11 +1003,15 @@ export function createPanels(actions) {
   function uncertainItems() {
     panel('uncertain', 'Review unconfirmed writes', { wide: true });
     const rows = state().uncertain;
-    body.append(element('p', 'help', rows.length ? 'Check each item in its source calendar before marking it reviewed. Creating it again can make a duplicate.' : 'Every write has been reviewed.'));
+    const help = 'Check each item in its source calendar before marking it reviewed.' + (rows.some(row => row.kind === 'create') ? ' Creating it again can make a duplicate.' : '');
+    body.append(element('p', 'help', rows.length ? help : 'Every write has been reviewed.'));
     for (const row of rows) {
       const entry = element('div', 'review-entry');
       const info = element('div');
       info.append(element('strong', '', row.title), calendarContext(sourceOf(row), 'small'), element('p', 'help', row.message));
+      if (row.originalSchedule && row.proposedSchedule) {
+        info.append(compareSchedules(row.originalSchedule, row.proposedSchedule, 'Previous time', 'Requested time'));
+      }
       entry.append(info, button('Mark reviewed', () => {
         panel('acknowledge', 'Mark write as reviewed?', { back: uncertainItems });
         body.append(element('strong', 'details-title', row.title), element('p', '', 'Confirm that you checked the source for this item. Calendar Hub will clear this notice.'));
@@ -981,8 +1066,9 @@ export function createPanels(actions) {
   function sync() {
     if (busy || !dialog.open) return;
     if (kind === 'settings') settings();
+    else if (kind === 'sync-details') syncDetails();
     else if (kind === 'hidden') hiddenItems();
     else if (kind === 'uncertain') uncertainItems();
   }
-  return { edit, settings, colorButton, notificationBell, tickTickLists, hiddenItems, uncertainItems, menu: itemMenu, closeMenu, sync, reschedule: (item, change) => save(item, { ...itemKey(item), title: item.title, ...change }) };
+  return { edit, settings, syncDetails, colorButton, notificationBell, tickTickLists, hiddenItems, uncertainItems, menu: itemMenu, closeMenu, sync, reschedule };
 }

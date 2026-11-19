@@ -67,3 +67,9 @@ The Mac journey connected two Google accounts and two read-only Exchange account
 All 107 automated tests and 15 packaged checks passed on Apple Silicon with macOS 27.0.1. Light and Dark applied to the native window, the calendar and its dialogs. The chosen appearance and calendar colors survived restart. The color checks covered Google, read-only Exchange and all three TickTick layouts, including black and white selections in both appearances. [Appearance and navigation checks](../tests/desktop-e2e.mjs) · [Color checks](../tests/calendar-color-journeys.mjs)
 
 With a provider response held open, appointments remained visible when switching to an overlapping range. An unseen, empty range showed its loading status before reporting zero items. Offline checks covered two adjacent saved days, and an active save stayed out of the recovery list while a new view read the cache. [Saved calendar checks](../tests/calendar-service.test.mjs)
+
+## Calendar Hub 0.5.1
+
+All 116 automated tests and 16 packaged checks passed on Apple Silicon. With the provider save held open, a moved or resized entry stayed at the chosen time. A second entry could be edited, including one with the same ID in another account. Rejected edits returned to their saved times. An unconfirmed resize stayed marked after reopening the view and sent one write. These checks covered TickTick, Google through browser sign-in and Google through Apple Calendar. [Drag checks](../tests/pending-edit-journeys.mjs) · [Apple Calendar checks](../tests/mac-onboarding-e2e.mjs)
+
+In an account with 54 lists, a successful TickTick move read no unrelated lists. A failed account sync showed one warning and kept list names available in **Sync details**. The live Mac check moved and resized a disposable task and appointment. Independent reads in TickTick and Apple Calendar confirmed the saved times. [Sync tests](../tests/sync-issues.test.mjs) · [Live Mac checks](../tests/live-desktop.mjs)

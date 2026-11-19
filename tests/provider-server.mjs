@@ -144,7 +144,12 @@ export async function startProviderServer({ multipleAccounts = false } = {}) {
       if (!account) return json(401, { error: { message: 'Invalid test credential.' } });
       const { calendars, projects, projectGroups, originals, events, inbox } = account;
       const body = contents ? JSON.parse(contents) : {};
-      controls.requests.push({ provider: isGoogle ? 'google' : 'ticktick', account: account.id, method, path: parts.join('/'), query: Object.fromEntries(u.searchParams) });
+      const call = { provider: isGoogle ? 'google' : 'ticktick', account: account.id, method, path: parts.join('/'), query: Object.fromEntries(u.searchParams) };
+      controls.requests.push(call);
+      if (method !== 'GET' && controls.beforeWrite) {
+        const status = await controls.beforeWrite(call);
+        if (status) return json(status, { error: { message: 'Fixture rejected the change.' } });
+      }
       if (isGoogle) {
         if (parts.join('/') === 'users/me/calendarList') {
           return u.searchParams.has('pageToken') ? json(200, { items: calendars.slice(2) }) : json(200, { items: calendars.slice(0, 2), nextPageToken: 'more' });

@@ -2,6 +2,7 @@ import { addDays, dateRangeLabel, formatDate, localDate, localTime, monday, mont
 import { $, accountLabel, button, element, errorText, healthFor, icon, iconButton, labelNativeSources, sourceContext, sourceCheckbox, tickTickCalendarCheckbox } from './dom.js';
 import { createPanels } from './panels.js';
 import { createPlanner } from './planner.js';
+import { syncIssues } from './sync-issues.js';
 
 const emptyState = { connections: [], sources: [], ticktickCalendars: [], items: [], hidden: [], health: [], uncertain: [], notificationPreferences: {}, notificationError: null };
 let data = emptyState;
@@ -20,6 +21,8 @@ let sequence = 0;
 let pending;
 let refreshCount = 0;
 let toastTimer;
+const pendingSchedules = new Map();
+const scheduleKey = (sourceId, id) => JSON.stringify([sourceId, id]);
 let scrollToWorkdayOnRender = false;
 const viewport = $('#timeline');
 viewport.dataset.refreshCount = '0';
@@ -45,11 +48,14 @@ function report(text, action) {
 }
 
 const panels = createPanels({
-  state: () => data, selectedDate: () => selectedDate, mutate, report, toast, refresh: refreshCalendars
+  state: () => data, selectedDate: () => selectedDate, beginSchedule, mutate, report, toast, refresh: refreshCalendars
 });
 const planner = createPlanner(viewport, {
   selectDay: day => goTo(day, 'day'), navigate, edit: panels.edit, create: defaults => panels.edit(undefined, defaults),
-  menu: panels.menu, reschedule: panels.reschedule
+  menu: panels.menu, reschedule: panels.reschedule, reviewWrites: item => {
+    if (data.uncertain.some(row => row.sourceId === item.sourceId && row.targetId === item.id)) panels.uncertainItems();
+    else void refreshCalendars();
+  }
 });
 
 function renderMini() {
@@ -157,10 +163,10 @@ function banner(text, action, dismiss = false, alert = true) {
   return row;
 }
 function renderStatus() {
-  const failures = data.health.filter(entry => entry.state !== 'current');
+  const { summary } = syncIssues(data);
   const latest = data.health.map(h => h.checkedAt).filter(Boolean).sort().at(-1);
   const syncing = Boolean(pending);
-  const needsAttention = loadError || failures.length || data.notificationError;
+  const needsAttention = loadError || summary || data.notificationError;
   const status = needsAttention ? 'Needs attention' : syncing ? 'Refreshing…' : !loadedRange ? 'Opening calendar' : !data.connections.length ? 'No connections' : latest ? 'Updated ' + localTime(latest) : 'Connected';
   $('#sync-status').textContent = status;
   $('#status-dot').className = 'status-dot ' + (needsAttention ? 'warning' : data.connections.length ? 'online' : '');
@@ -169,24 +175,54 @@ function renderStatus() {
   viewport.setAttribute('aria-busy', String(syncing));
   const banners = [];
   const retry = { label: 'Retry refresh', action: refreshCalendars };
-  if (loadError) banners.push(banner(loadError, retry));
-  if (data.notificationError) banners.push(banner(data.notificationError, retry));
-  if (failures.length) {
-    const descriptions = failures.map(entry => {
-      const source = data.sources.find(source => source.id === entry.sourceId);
-      const connection = data.connections.find(row => row.id === entry.connectionId);
-      const name = source ? sourceContext(source, data.connections) : connection ? accountLabel(connection, data.connections) : 'Calendar';
-      const stale = entry.state === 'stale' ? ` is stale. Last checked ${localTime(entry.checkedAt)}.` : ' is unavailable.';
-      return name + stale + (entry.message ? ' ' + entry.message : '');
-    });
-    banners.push(banner([...new Set(descriptions)].join(' '), retry));
-  }
+  if (notice && notice.text !== data.notificationError) banners.push(banner(notice.text, notice.action, true));
   if (data.uncertain.length) {
     const n = data.uncertain.length;
     banners.push(banner(`${n} unconfirmed ${n === 1 ? 'write needs' : 'writes need'} review.`, { label: 'Review writes', action: panels.uncertainItems }));
   }
-  if (notice && notice.text !== data.notificationError) banners.push(banner(notice.text, notice.action, true));
+  if (loadError) banners.push(banner(loadError, retry));
+  if (data.notificationError) banners.push(banner(data.notificationError, retry));
+  if (summary) {
+    const details = button('Sync details', panels.syncDetails, 'text-button');
+    details.id = 'sync-details';
+    const row = banner(summary, retry);
+    row.append(details);
+    banners.push(row);
+  }
   $('#notices').replaceChildren(...banners);
+}
+
+function beginSchedule(item, change, needsApproval) {
+  const key = scheduleKey(item.sourceId, item.id);
+  if (pendingSchedules.has(key)) return;
+  const edit = { item, change, phase: needsApproval ? 'review' : 'saving' };
+  pendingSchedules.set(key, edit);
+  renderCalendar();
+  return {
+    approve() { edit.phase = 'saving'; renderCalendar(); },
+    unconfirmed() { edit.phase = 'unconfirmed'; renderCalendar(); },
+    finish() { pendingSchedules.delete(key); renderCalendar(); }
+  };
+}
+
+function projectedItems() {
+  if (!pendingSchedules.size && !data.uncertain.length) return data.items;
+  const entries = new Map(data.items.map(item => [scheduleKey(item.sourceId, item.id), item]));
+  for (const row of data.uncertain) {
+    if (!row.targetId) continue;
+    const key = scheduleKey(row.sourceId, row.targetId);
+    const item = entries.get(key);
+    if (item || row.proposedSchedule) {
+      entries.set(key, {
+        id: row.targetId, sourceId: row.sourceId, title: row.title, ...item, ...row.proposedSchedule, scheduleState: 'unconfirmed'
+      });
+    }
+  }
+  for (const [key, edit] of pendingSchedules) {
+    const latest = entries.get(key) || edit.item;
+    entries.set(key, { ...latest, ...edit.change, scheduleState: edit.phase });
+  }
+  return [...entries.values()];
 }
 
 function renderCalendar() {
@@ -197,8 +233,8 @@ function renderCalendar() {
     return { ...source, color: calendar?.color || source.color, context: sourceContext(source, data.connections, calendar?.name) };
   });
   const selected = new Set(chosen.map(source => source.id));
-  const hidden = new Set(data.hidden.map(item => JSON.stringify([item.sourceId, item.id])));
-  const entries = data.items.filter(item => selected.has(item.sourceId) && !hidden.has(JSON.stringify([item.sourceId, item.id])));
+  const hidden = new Set(data.hidden.map(item => scheduleKey(item.sourceId, item.id)));
+  const entries = projectedItems().filter(item => selected.has(item.sourceId) && !hidden.has(scheduleKey(item.sourceId, item.id)));
   planner.render({ days: period.days, selectedDate, entries, calendars: chosen });
   if (scrollToWorkdayOnRender) {
     planner.scrollToWorkday();
@@ -237,10 +273,15 @@ function refreshCalendars() {
   return refresh({ force: true, refreshNotifications: true });
 }
 function showModel(result, key) {
+  if (result.snapshotId < data.snapshotId) return;
   const connections = result.connections.map(connection => ({
     ...connection, providerName: result.connectionOptions.integrations.find(row => row.id === connection.provider)?.name || connection.provider
   }));
   data = { ...emptyState, ...result, sources: labelNativeSources(result.sources), connections };
+  for (const row of data.uncertain) {
+    const key = scheduleKey(row.sourceId, row.targetId);
+    if (pendingSchedules.get(key)?.phase === 'unconfirmed') pendingSchedules.delete(key);
+  }
   displayedRange = key;
   renderHeading();
   renderSources();
@@ -287,12 +328,49 @@ function refresh({ force = false, preferencesOnly = false, refreshNotifications 
   })();
   return request.promise;
 }
+async function showSavedState() {
+  for (;;) {
+    const { start, end } = range();
+    const key = rangeKey({ start, end });
+    const result = await window.calendar.state({ start, end, cachedOnly: true });
+    if (key !== rangeKey(range())) continue;
+    showModel(result, key);
+    if (displayedRange === key) return;
+  }
+}
 async function mutate(method, payload) {
-  let failure;
+  const itemWrite = method === 'save' || method === 'complete' || method === 'remove';
+  const { start, end } = range();
+  const viewRange = { start, end };
+  const key = rangeKey(viewRange);
+  let failure, receipt;
   try {
     if (!window.calendar?.[method]) throw new Error('Open the Calendar Hub Mac app to change a calendar.');
-    await window.calendar[method](payload);
+    if (itemWrite) {
+      const reply = await window.calendar.writeItem(method, { ...payload, viewRange });
+      if (!reply.ok) throw Object.assign(new Error(reply.message), { code: reply.code });
+      receipt = reply.value;
+    } else await window.calendar[method](payload);
   } catch (error) { failure = error; }
+  if (itemWrite || method === 'acknowledge') {
+    if (receipt && key === rangeKey(range())) showModel(receipt.state, key);
+    else {
+      try { await showSavedState(); }
+      catch (error) {
+        loadError = errorText(error);
+        if (receipt && receipt.state.snapshotId > (data.snapshotId ?? 0)) {
+          const items = data.items.filter(item => item.sourceId !== payload.sourceId || (item.id !== payload.id && item.id !== receipt.item?.id));
+          if (receipt.item) items.push(receipt.item);
+          data = { ...data, items, snapshotId: receipt.state.snapshotId };
+          renderCalendar();
+          panels.sync();
+        }
+      }
+    }
+    renderStatus();
+    if (failure) throw failure;
+    return;
+  }
   const preferencesOnly = method === 'setCalendarNotifications' || method === 'setCalendarColor' ||
     (!failure && (method === 'configureTickTick' || method === 'setTickTickCalendarVisible' || method === 'renameConnection'));
   while (preferencesOnly && pending && !pending.reuseChecks && pending.serial === sequence) await pending.promise;

@@ -24,11 +24,16 @@ export function displayedColor(target) {
   return target.evaluate(node => getComputedStyle(node).getPropertyValue('--source-color').trim().toLowerCase());
 }
 
-function textContrast(target) {
+export function textContrast(target) {
   return target.evaluate(node => {
     const style = getComputedStyle(node);
     const ctx = document.createElement('canvas').getContext('2d');
+    const surface = getComputedStyle(node.closest('.day-column, .all-day-cell') || document.documentElement).backgroundColor;
     function luminance(color) {
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = surface;
+      ctx.fillRect(0, 0, 1, 1);
+      ctx.globalAlpha = Number(style.opacity);
       ctx.fillStyle = color;
       ctx.fillRect(0, 0, 1, 1);
       const [r, g, b] = [...ctx.getImageData(0, 0, 1, 1).data].map(value => {

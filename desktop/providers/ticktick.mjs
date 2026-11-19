@@ -36,7 +36,7 @@ function parseProjectMetadata(text) {
 }
 
 function conflict() {
-  return failure('This task changed in TickTick. Refresh it before editing.', 'CONFLICT')
+  return failure('This task changed in TickTick. Review the latest task before editing.', 'CONFLICT')
 }
 
 function civil(day) {
@@ -252,6 +252,7 @@ export function createTickTick({
       const status = response.status
       await response.body?.cancel().catch(() => {})
       if (status === 409 || status === 412) throw conflict()
+      if (status === 429) throw failure('TickTick reached its request limit. Try again later.', 'RATE_LIMITED', status)
       if (write && (status >= 500 || status === 408)) {
         throw failure('TickTick did not confirm the change (HTTP ' + status + '). Check the original task.', 'UNCERTAIN', status)
       }
@@ -422,7 +423,11 @@ export function createTickTick({
     }
     const dates = schedule(task, timeZone)
     const fields = original._ticktick?.fields ?? []
-    if (task.repeatFlag || (task.status ?? 0) !== 0 || version(task, dates, fields) !== original.version) throw conflict()
+    if (task.repeatFlag || (task.status ?? 0) !== 0 || task.kind === 'NOTE' || version(task, dates, fields) !== original.version) {
+      const error = conflict()
+      error.currentItem = (task.status ?? 0) === 0 && task.kind !== 'NOTE' ? normalize(source, task, timeZone) : null
+      throw error
+    }
     return task
   }
 

@@ -4,6 +4,7 @@ import { button, editable, element, sourceColor } from './dom.js';
 const PIXELS_PER_MINUTE = 1.1;
 const iso = instant => new Date(instant).toISOString();
 const quarter = minutes => Math.round(minutes / SLOT) * SLOT;
+const scheduleLabels = { review: 'Awaiting approval', saving: 'Saving changes', unconfirmed: 'Unconfirmed change' };
 
 export function createPlanner(viewport, actions) {
   let dates = [];
@@ -30,17 +31,21 @@ export function createPlanner(viewport, actions) {
       clock();
       return;
     }
-    cancel();
     snapshot = signature;
     const rangeChanged = days.join() !== dates.join();
     const oldTop = viewport.scrollTop;
     const focusedItem = document.activeElement?.closest('.calendar-item');
+    if (rangeChanged || timeZone !== zone) cancel();
     if (rangeChanged || !axis || zone !== timeZone) axis = createAxis(days);
     timeZone = zone;
     dates = days;
     sources = new Map(calendars.map(source => [source.id, source]));
     items = new Map(entries.map(item => [key(item.sourceId, item.id), item]));
     columns = new Map();
+    if (gesture?.item) {
+      const item = items.get(key(gesture.item.sourceId, gesture.item.id));
+      if (item?.scheduleState || !editable(item, sources.get(gesture.item.sourceId))) cancel();
+    }
 
     const sheet = element('div', 'calendar-sheet');
     sheet.style.setProperty('--day-count', String(days.length));
@@ -126,10 +131,11 @@ export function createPlanner(viewport, actions) {
       initialScroll = false;
     }
     if (focusedItem && !document.querySelector('dialog[open]')) {
-      const replacement = [...viewport.querySelectorAll('.calendar-item')].find(node =>
-        node.dataset.itemId === focusedItem.dataset.itemId && node.dataset.sourceId === focusedItem.dataset.sourceId && node.dataset.date === focusedItem.dataset.date);
-      (replacement || viewport).focus({ preventScroll: true });
+      const matches = [...viewport.querySelectorAll('.calendar-item')].filter(node =>
+        node.dataset.itemId === focusedItem.dataset.itemId && node.dataset.sourceId === focusedItem.dataset.sourceId);
+      (matches.find(node => node.dataset.date === focusedItem.dataset.date) || matches[0] || viewport).focus({ preventScroll: true });
     }
+    if (gesture?.active) preview(gesture);
     clock();
   }
 
@@ -140,12 +146,27 @@ export function createPlanner(viewport, actions) {
     block.dataset.itemId = item.id;
     block.dataset.sourceId = item.sourceId;
     block.dataset.date = day;
-    block.dataset.editable = String(editable(item, source));
+    const canEdit = !item.scheduleState && editable(item, source);
+    block.dataset.editable = String(canEdit);
     block.style.setProperty('--source-color', sourceColor(source));
     const time = item.allDay ? 'All day' : timeLabel(item);
+    const context = source.context || source.name;
+    const status = scheduleLabels[item.scheduleState];
     block.setAttribute('aria-label', item.title);
-    block.setAttribute('aria-description', [time, source.context || source.name, item.completed ? 'Completed' : '', item.recurring ? 'Recurring' : ''].filter(Boolean).join(', '));
-    block.title = [item.title, time, source.context || source.name].join(' · ');
+    block.setAttribute('aria-description', [time, context, status, item.completed ? 'Completed' : '', item.recurring ? 'Recurring' : ''].filter(Boolean).join(', '));
+    block.title = [item.title, time, context, status].filter(Boolean).join(' · ');
+    if (status) {
+      const pending = item.scheduleState !== 'unconfirmed';
+      block.dataset.writeState = pending ? 'pending' : 'unconfirmed';
+      if (pending) {
+        block.setAttribute('aria-busy', 'true');
+        block.setAttribute('aria-disabled', 'true');
+      }
+    }
+    if (gesture?.item && gesture.item.id === item.id && gesture.item.sourceId === item.sourceId && gesture.date === day) {
+      gesture.origin = block;
+      if (gesture.active) block.classList.add('drag-origin');
+    }
     if (item.completed) block.classList.add('completed');
     const title = element('span', 'item-title');
     if (source.itemKind === 'task') title.append(element('span', 'task-box', item.completed ? '✓' : ''));
@@ -156,7 +177,7 @@ export function createPlanner(viewport, actions) {
       if (height < 38) block.classList.add('short');
       if (height >= 52) block.classList.add('roomy');
       if (height >= 38) block.append(element('span', 'item-time', time));
-      if (editable(item, source)) {
+      if (canEdit) {
         for (const edge of ['start', 'end']) {
           if ((edge === 'start' && !segment.startsHere) || (edge === 'end' && !segment.endsHere)) continue;
           const handle = element('span', 'resize-handle');
@@ -222,7 +243,8 @@ export function createPlanner(viewport, actions) {
       return;
     }
     const item = itemFrom(event.target);
-    if (item) actions.edit(item);
+    if (item?.scheduleState === 'unconfirmed') actions.reviewWrites(item);
+    else if (item && !item.scheduleState) actions.edit(item);
   });
   viewport.addEventListener('dblclick', event => {
     if (skipClick || event.target.closest('button')) return;
@@ -239,13 +261,16 @@ export function createPlanner(viewport, actions) {
     if (!item) return;
     event.preventDefault();
     cancel();
-    actions.menu(item, event.clientX, event.clientY, event.target.closest('.calendar-item'));
+    if (item.scheduleState === 'unconfirmed') actions.reviewWrites(item);
+    else if (!item.scheduleState) actions.menu(item, event.clientX, event.clientY, event.target.closest('.calendar-item'));
   });
   viewport.addEventListener('keydown', event => {
     if (event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return;
     const item = itemFrom(event.target);
     if (!item) return;
     event.preventDefault();
+    if (item.scheduleState === 'unconfirmed') return actions.reviewWrites(item);
+    if (item.scheduleState) return;
     const box = event.target.getBoundingClientRect();
     actions.menu(item, box.left, box.bottom, event.target);
   });
@@ -282,10 +307,10 @@ export function createPlanner(viewport, actions) {
     if (!cell) return;
     const block = event.target.closest('.calendar-item');
     const date = cell.dataset.date;
-    const drag = { capture: block || cell, date, pointerId: event.pointerId, originX: event.clientX, originY: event.clientY, x: event.clientX, y: event.clientY };
+    const drag = { origin: block, date, pointerId: event.pointerId, originX: event.clientX, originY: event.clientY, x: event.clientX, y: event.clientY };
     if (block) {
       const item = itemFrom(block);
-      if (!editable(item, sources.get(block.dataset.sourceId))) return;
+      if (item?.scheduleState || !editable(item, sources.get(block.dataset.sourceId))) return;
       drag.item = item;
       drag.edge = event.target.closest('[data-edge]')?.dataset.edge;
       drag.offset = 0;
@@ -389,8 +414,8 @@ export function createPlanner(viewport, actions) {
     if (!drag.active) {
       if (Math.hypot(drag.x - drag.originX, drag.y - drag.originY) < 5) return;
       drag.active = true;
-      drag.capture.setPointerCapture(event.pointerId);
-      if (drag.item) drag.capture.classList.add('drag-origin');
+      viewport.setPointerCapture(event.pointerId);
+      drag.origin?.classList.add('drag-origin');
       document.body.classList.add('dragging');
       if (drag.anchor) document.body.classList.add('drawing-appointment');
       frame = requestAnimationFrame(autoScroll);
@@ -425,9 +450,9 @@ export function createPlanner(viewport, actions) {
     if (!drag.active) return;
     skipClick = true;
     cancelAnimationFrame(frame);
-    if (drag.capture.hasPointerCapture(drag.pointerId)) drag.capture.releasePointerCapture(drag.pointerId);
+    if (viewport.hasPointerCapture(drag.pointerId)) viewport.releasePointerCapture(drag.pointerId);
     document.body.classList.remove('dragging', 'drawing-appointment');
-    drag.capture.classList.remove('drag-origin');
+    drag.origin?.classList.remove('drag-origin');
     viewport.querySelectorAll('.drag-preview').forEach(node => node.remove());
   }
   window.addEventListener('pointercancel', cancel);

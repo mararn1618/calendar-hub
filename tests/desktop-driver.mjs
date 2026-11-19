@@ -42,23 +42,26 @@ export async function createItem(page, { title, calendar, calendarValue, allDay 
 }
 
 export class DesktopDriver {
-  constructor({ evidenceDirectory, configPath, startupTimeout = 30_000 } = {}) {
+  constructor({ evidenceDirectory, configPath, profileDirectory, startupTimeout = 30_000 } = {}) {
     this.evidenceDirectory = evidenceDirectory;
     this.configPath = configPath;
+    this.profileDirectory = profileDirectory;
     this.startupTimeout = startupTimeout;
     this.errors = [];
   }
   async launch() {
     const args = this.configPath ? ['--calendar-test-config=' + this.configPath] : [];
+    if (this.profileDirectory) args.push('--user-data-dir=' + this.profileDirectory);
     this.application = await electron.launch({
       executablePath: join(appPath, 'Contents/MacOS/Calendar Hub'), args, timeout: this.startupTimeout
     });
     this.page = await this.application.firstWindow({ timeout: this.startupTimeout });
-    this.page.setDefaultTimeout(15_000);
+    this.page.setDefaultTimeout(this.startupTimeout);
     this.page.on('pageerror', error => this.errors.push(error.message));
     await this.page.locator('#timeline').waitFor({ state: 'attached', timeout: this.startupTimeout });
     await until(async () => Number(await this.page.locator('#timeline').getAttribute('data-refresh-count')) > 0,
       'The packaged calendar window did not load its first state.', this.startupTimeout);
+    this.page.setDefaultTimeout(15_000);
     return this.page;
   }
   async restart() {
@@ -74,9 +77,10 @@ export class DesktopDriver {
     await mkdir(this.evidenceDirectory, { recursive: true });
     await page.screenshot({ path: join(this.evidenceDirectory, name + '.png') });
   }
-  async dragTo({ itemId, day, hour, minute = 0, edge }) {
+  async dragTo({ itemId, sourceId, day, hour, minute = 0, edge }) {
     const page = this.page, viewport = page.locator('#timeline');
-    const block = viewport.locator('[data-item-id=' + JSON.stringify(itemId) + ']').first();
+    const sourceSelector = sourceId ? '[data-source-id=' + JSON.stringify(sourceId) + ']' : '';
+    const block = viewport.locator('[data-item-id=' + JSON.stringify(itemId) + ']' + sourceSelector).first();
     await block.waitFor();
     const col = viewport.locator('.day-column[data-date="' + day + '"]');
     const clock = col.locator('.hour-line[data-time="' + String(hour).padStart(2, '0') + ':00"]').first();

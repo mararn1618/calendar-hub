@@ -42,7 +42,7 @@ export async function verifyTickTickJourneys({ page, provider, dragTo, restart, 
       return task.isAllDay === false && Date.parse(task.startDate) === expectedStart && Date.parse(task.dueDate) === expectedEnd
     }, () => 'Expected original TickTick task at ' + date + ' ' + start + ' to ' + end + ', got ' + JSON.stringify(originals.get('review')))
     checkOriginal()
-    await selectItem(date, 'timed-item').and(page.locator('[aria-description*="' + start + '"][aria-description*="' + end + '"]')).waitFor()
+    await selectItem(date, 'timed-item').and(page.locator(':not([data-write-state])[aria-description*="' + start + '"][aria-description*="' + end + '"]')).waitFor()
   }
 
   await page.getByRole('button', { name: 'Day', exact: true }).click()

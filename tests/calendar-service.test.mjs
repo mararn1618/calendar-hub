@@ -355,6 +355,121 @@ test('TickTick preference changes reuse range health and only fetch lists withou
   assert.equal(calls.tickItems.length, previous.tickItems.length + 2 + selected.length);
 });
 
+test('a confirmed edit keeps its item and existing source health without reloading the account', async () => {
+  const lists = Array.from({ length: 54 }, (_, index) => tickList('list-' + index));
+  const { service, remote, dates, sourceId } = await tickTickAccount(lists);
+  const readItems = remote.items;
+  const before = await service.run('state', dates);
+  const calls = [];
+  remote.sources = async () => { calls.push('directory'); throw new Error('List directory offline'); };
+  remote.items = async source => {
+    calls.push(source.id);
+    if (source.id === 'list-1') throw new Error('List offline');
+    return readItems(source);
+  };
+  const stale = await service.run('state', dates);
+  assert.equal(stale.health.find(row => row.sourceId === sourceId('list-1')).state, 'stale');
+  const target = before.items.find(item => item.sourceId === sourceId('list-0'));
+  remote.update = async (_source, item, draft) => ({ ...item, ...draft, version: 'confirmed' });
+  calls.length = 0;
+  const receipt = await service.run('save', { ...target, title: 'Changed in TickTick', viewRange: dates });
+  const saved = receipt.state;
+  assert.deepEqual(calls, []);
+  assert.deepEqual(saved.health, stale.health);
+  assert(saved.items.some(item => item.id === target.id && item.version === 'confirmed'));
+  assert.deepEqual(receipt.item, saved.items.find(item => item.id === target.id));
+  assert(saved.snapshotId > stale.snapshotId);
+  assert.deepEqual((await service.run('state', { ...dates, cachedOnly: true })).health, stale.health);
+});
+
+test('a refresh requested during a save fetches its sources and keeps just-written items', async () => {
+  const { service, remote, dates } = await tickTickAccount([tickList('work'), tickList('home')]);
+  const [task] = (await service.run('state', dates)).items;
+  const started = Promise.withResolvers(), release = Promise.withResolvers();
+  remote.update = async (_source, original, draft) => {
+    started.resolve();
+    await release.promise;
+    return { ...original, ...draft, version: 'confirmed' };
+  };
+  const readItems = remote.items;
+  const reads = [];
+  remote.items = async source => {
+    reads.push(source.id);
+    return (await readItems(source)).map(item => item.id === task.id ? item : { ...item, title: 'Updated elsewhere' });
+  };
+  const saving = service.run('save', { ...task, title: 'New time' });
+  await started.promise;
+  const refreshing = service.run('state', dates);
+  release.resolve();
+  await saving;
+  const refreshed = await refreshing;
+  assert.deepEqual(reads.sort(), ['home', 'work']);
+  assert.equal(refreshed.items.find(item => item.id === task.id).version, 'confirmed');
+  assert.equal(refreshed.items.find(item => item.id !== task.id).title, 'Updated elsewhere');
+  const later = await service.run('state', dates);
+  assert.equal(later.items.find(item => item.id === task.id).version, 'one');
+});
+
+test('only the affected source is reconciled after a provider conflict or an uncertain write', async () => {
+  const { service, remote, dates, sourceId } = await tickTickAccount([tickList('work'), tickList('home')]);
+  const initial = await service.run('state', dates);
+  const work = initial.items.find(item => item.sourceId === sourceId('work'));
+  const homeHealth = initial.health.find(row => row.sourceId === sourceId('home'));
+  const reads = [];
+  remote.sources = () => assert.fail('Unexpected list discovery');
+  remote.items = async source => { reads.push(source.id); return [{ ...work, title: 'Remote change', version: 'two' }]; };
+  remote.update = async () => { throw Object.assign(new Error('The task changed'), { code: 'CONFLICT' }); };
+  await assert.rejects(service.run('save', work), { code: 'CONFLICT' });
+  const current = await service.run('state', { ...dates, cachedOnly: true });
+  assert.deepEqual(reads, ['work']);
+  assert.deepEqual(current.health.find(row => row.sourceId === sourceId('home')), homeHealth);
+  assert.deepEqual(current.uncertain, []);
+  const changed = current.items.find(item => item.id === work.id);
+  assert.equal(changed.title, 'Remote change');
+
+  remote.update = async () => { throw Object.assign(new Error('Unconfirmed'), { code: 'UNCERTAIN' }); };
+  remote.items = async source => { reads.push(source.id); throw new Error('List offline'); };
+  await assert.rejects(service.run('save', changed), { code: 'UNCERTAIN' });
+  const uncertain = await service.run('state', { ...dates, cachedOnly: true });
+  assert.deepEqual(reads, ['work', 'work']);
+  assert.deepEqual(uncertain.health.find(row => row.sourceId === sourceId('home')), homeHealth);
+  assert.equal(uncertain.health.find(row => row.sourceId === sourceId('work')).state, 'stale');
+  assert.equal(uncertain.uncertain.length, 1);
+  assert.equal(uncertain.items.find(item => item.id === work.id).version, 'two');
+
+  remote.items = async source => { reads.push(source.id); return [{ ...changed, version: 'three' }]; };
+  await service.run('acknowledge', { id: uncertain.uncertain[0].id });
+  const reviewed = await service.run('state', { ...dates, cachedOnly: true });
+  assert.deepEqual(reads, ['work', 'work', 'work']);
+  assert.deepEqual(reviewed.uncertain, []);
+  assert.deepEqual(reviewed.health.find(row => row.sourceId === sourceId('home')), homeHealth);
+  assert.equal(reviewed.items.find(item => item.id === work.id).version, 'three');
+});
+
+test('a queued refresh can recover an item when the conflict read failed', async () => {
+  const { service, remote, dates } = await tickTickAccount([tickList('work')]);
+  const [task] = (await service.run('state', dates)).items;
+  const started = Promise.withResolvers(), release = Promise.withResolvers();
+  remote.update = async () => {
+    started.resolve();
+    await release.promise;
+    throw Object.assign(new Error('Changed elsewhere'), { code: 'CONFLICT' });
+  };
+  let reads = 0;
+  remote.items = async () => {
+    if (++reads === 1) throw new Error('Offline during the conflict');
+    return [{ ...task, version: 'recovered' }];
+  };
+  const rejected = assert.rejects(service.run('save', task), { code: 'CONFLICT' });
+  await started.promise;
+  const refresh = service.run('state', dates);
+  release.resolve();
+  await rejected;
+  const current = await refresh;
+  assert.equal(current.health[0].state, 'current');
+  assert.equal(current.items[0].version, 'recovered');
+});
+
 test('reopened TickTick lists regain their provider permissions and explicit local locks survive rediscovery', async () => {
   const lists = [tickList('archived', { archived: true, writable: false }), tickList('locked', { writable: false })];
   const { service, profile, registry, remote, dates, sourceId } = await tickTickAccount(lists);
@@ -565,7 +680,8 @@ test('cached views show interrupted and uncertain writes while an active save st
   profile.data.journal.push(earlier);
   const started = Promise.withResolvers(), reply = Promise.withResolvers();
   remote.update = async () => { started.resolve(); return reply.promise; };
-  const saving = assert.rejects(service.run('save', { ...item, title: 'Changed meeting' }), { code: 'UNCERTAIN' });
+  const proposedSchedule = { allDay: false, start: '2026-11-19T16:00:00Z', end: '2026-11-19T17:00:00Z' };
+  const saving = assert.rejects(service.run('save', { ...item, ...proposedSchedule }), { code: 'UNCERTAIN' });
   await started.promise;
   const pending = profile.data.journal.find(entry => entry.targetId === item.id);
   const cached = { ...dates, cachedOnly: true };
@@ -574,7 +690,10 @@ test('cached views show interrupted and uncertain writes while an active save st
     const during = await Promise.race([service.run('state', cached), new Promise(resolve => setImmediate(resolve))]);
     assert.deepEqual(during?.uncertain, [earlier]);
     const reopened = new CalendarService({ ...profile, data: structuredClone(profile.data) }, registry);
-    assert.deepEqual((await reopened.run('state', cached)).uncertain.map(entry => entry.id), [earlier.id, pending.id]);
+    const interrupted = (await reopened.run('state', cached)).uncertain;
+    assert.deepEqual(interrupted.map(entry => entry.id), [earlier.id, pending.id]);
+    assert.deepEqual(interrupted[1].originalSchedule, { ...dates, allDay: true });
+    assert.deepEqual(interrupted[1].proposedSchedule, proposedSchedule);
   } finally {
     reply.reject(Object.assign(new Error('Connection lost during save.'), { code: 'UNCERTAIN' }));
     await saving;

@@ -6,6 +6,7 @@ import { createNotificationFixture } from './notification-center.mjs';
 export async function startMacCalendarFixture(calendars) {
   const events = new Map();
   const calls = [];
+  const controls = {};
   const notifications = createNotificationFixture();
   const server = createServer(async (request, response) => {
     const reply = (result, status = 200) => {
@@ -24,7 +25,8 @@ export async function startMacCalendarFixture(calendars) {
       const lengths = { authorize: 2, accounts: 2, sources: 2, items: 5, create: 3, update: 3, remove: 3 };
       const length = lengths[action], [, , calendarId, start, end] = args.slice(0, length);
       const scope = args.length === length + 1 ? JSON.parse(args[length]) : {};
-      calls.push({ action, route, calendarId, input, accountId: scope.accountId });
+      const call = { action, route, calendarId, input, accountId: scope.accountId };
+      calls.push(call);
       if (!['mac', 'google', 'exchange'].includes(route) || !length) return reply({ error: 'Invalid route.', code: 'INVALID' });
       const writing = ['create', 'update', 'remove'].includes(action);
       if (writing && route !== 'google') return reply({ error: 'Calendar is read-only.', code: 'READ_ONLY' });
@@ -51,6 +53,10 @@ export async function startMacCalendarFixture(calendars) {
       if (action !== 'create' && (!previous || previous.providerCalendarId !== calendarId || previous.version !== input.original.version || previous.start !== input.original.start)) {
         return reply({ error: 'Event changed.', code: 'CONFLICT' });
       }
+      if (controls.beforeWrite) {
+        const reason = await controls.beforeWrite(call);
+        if (reason) return reply(reason);
+      }
       if (action === 'remove') {
         events.delete(previous.id);
         return reply({ removed: true });
@@ -69,7 +75,7 @@ export async function startMacCalendarFixture(calendars) {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   return {
-    calls, events, notifications: notifications.state, origin: `http://127.0.0.1:${server.address().port}`,
+    calls, events, controls, notifications: notifications.state, origin: `http://127.0.0.1:${server.address().port}`,
     close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }),
   };
 }

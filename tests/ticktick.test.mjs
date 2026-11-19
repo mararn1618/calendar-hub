@@ -10,7 +10,7 @@ const original = {
   id: 'task1', projectId: source.id, title: 'Buy apples', status: 0,
   timeZone: zone, isAllDay: true, dueDate: '2026-10-24T22:00:00+0000',
   content: 'Six apples', desc: 'Market list', tags: ['market'], reminders: ['TRIGGER:PT0S'],
-  priority: 3, parentId: 'parent', items: [{ id: 'apple', title: 'Apples', status: 1, sortOrder: 1 }],
+  priority: 3, sortOrder: -91, parentId: 'parent', items: [{ id: 'apple', title: 'Apples', status: 1, sortOrder: 1 }],
 }
 
 function response(value, status = 200) {
@@ -38,20 +38,107 @@ function api(handle) {
 
 test('lists every page and keeps read, comment and archived lists read-only', async () => {
   const projects = Array.from({ length: 200 }, (_, i) => ({ id: 'p' + i, name: 'List ' + i }))
+  projects[199].groupId = 'work'
   const { client, calls } = api(({ path, query }) => {
+    if (path === '/project/group') return response([{ id: 'work', name: 'Work', sortOrder: 0 }])
     assert.equal(path, '/project')
     assert.equal(query.get('limit'), '200')
     return response(query.get('offset') === '0' ? projects : [
       { id: 'shared', name: 'Shared', permission: 'comment' }, { id: 'read', name: 'Read', permission: 'read' },
-      { id: 'old', name: 'Old', closed: true }, { id: 'notes', name: 'Notes', kind: 'NOTE' },
+      { id: 'old', name: 'Old', groupId: 'work', closed: true }, { id: 'notes', name: 'Notes', kind: 'NOTE' },
     ])
   })
   const lists = await client.sources()
-  assert.equal(calls.length, 2)
-  assert.equal(lists[0].id, 'inbox')
-  assert(lists.find(p => p.id === 'p199').writable)
+  assert.deepEqual(calls.map(call => [call.path, call.query.get('offset')]), [
+    ['/project', '0'], ['/project', '200'], ['/project/group', null],
+  ])
+  assert.deepEqual(lists[0], { ...inbox, groupId: null, sortOrder: null, archived: false, inbox: true })
+  const last = lists.find(p => p.id === 'p199')
+  const archived = lists.find(p => p.id === 'old')
+  assert(last.writable)
+  assert.equal(last.archived, false)
+  assert.equal(archived.archived, true)
+  assert.deepEqual(last.folder, { id: 'work', name: 'Work', sortOrder: '0' })
+  assert.deepEqual(archived.folder, last.folder)
   assert(lists.filter(p => ['read', 'shared', 'old'].includes(p.id)).every(p => !p.writable))
   assert(!lists.find(p => p.id === 'notes'))
+})
+
+test('keeps exact signed list and folder orders, and updates names, moves and provider order on refresh', async () => {
+  let projects = `[
+    {"id":"second","name":"Second","groupId":"g1","sortOrder":-9223372036854775807,"color":"#468ace"},
+    {"id":"first","name":"First","groupId":"g2","sortOrder":-9223372036854775808},
+    {"id":"inbox47","name":"Eingang"},
+    {"id":"root","name":"Root","sortOrder":"9007199254740993"}
+  ]`
+  let groups = `[
+    {"id":"g1","name":"🌱 Garten","sortOrder":9223372036854775807},
+    {"id":"g2","name":"Garten","sortOrder":9223372036854775806}
+  ]`
+  const { client } = api(({ path }) => new Response(path === '/project' ? projects : groups))
+  const first = await client.sources()
+  assert.deepEqual(first.map(p => p.id), ['inbox47', 'second', 'first', 'root'])
+  assert.deepEqual(first.map(p => p.sortOrder), [null, '-9223372036854775807', '-9223372036854775808', '9007199254740993'])
+  assert.equal(first[0].inbox, true)
+  assert.equal(first[0].name, 'Eingang')
+  assert.equal(first[1].color, '#468ace')
+  assert.deepEqual(first[1].folder, { id: 'g1', name: '🌱 Garten', sortOrder: '9223372036854775807' })
+  assert.deepEqual(first[2].folder, { id: 'g2', name: 'Garten', sortOrder: '9223372036854775806' })
+  assert.equal(first[3].groupId, null)
+  assert(!Object.hasOwn(first[3], 'folder'))
+
+  projects = `[
+    {"id":"root","name":"Root"},
+    {"id":"first","name":"First","groupId":"","sortOrder":100.5},
+    {"id":"second","name":"Second","groupId":"g2","sortOrder":9223372036854775808},
+    {"id":"inbox47","name":"Eingang"}
+  ]`
+  groups = '[{"id":"g2","name":"Familie","sortOrder":"-5"}]'
+  const refreshed = await client.sources()
+  assert.deepEqual(refreshed.map(p => p.id), ['inbox47', 'root', 'first', 'second'])
+  assert.deepEqual(refreshed.map(p => p.sortOrder), [null, null, null, null])
+  assert.equal(refreshed[2].groupId, null)
+  assert(!Object.hasOwn(refreshed[2], 'folder'))
+  assert.equal(refreshed[3].groupId, 'g2')
+  assert.deepEqual(refreshed[3].folder, { id: 'g2', name: 'Familie', sortOrder: '-5' })
+})
+
+test('keeps grouped lists readable when folder metadata is missing or inaccessible', async () => {
+  const projects = [
+    { ...source, groupId: 'group' }, { id: 'other', name: 'Other', groupId: 'group2' },
+  ]
+  let folderReply
+  const { client } = api(({ path }) => {
+    if (path === '/project') return response(projects)
+    if (path === '/project/group') return folderReply()
+    assert.equal(path, '/project/personal/data')
+    return response({ tasks: [original] })
+  })
+  for (folderReply of [
+    () => response(null, 403), () => response(null, 404), () => response(null, 503),
+    () => { throw new Error('offline') }, () => new Response('broken JSON'),
+    () => response({ groups: [] }), () => response([]), () => response([{ id: 'group', name: '  ' }]),
+    () => response([{ id: 'group', name: 'Work' }, { id: 'group', name: 'Home' }]),
+  ]) {
+    const [, list] = await client.sources()
+    assert.equal(list.groupId, 'group')
+    assert(!Object.hasOwn(list, 'folder'))
+    assert.equal((await client.items(list, day.start, day.end))[0].canEdit, true)
+  }
+  folderReply = () => response([null, { id: 'group2', name: {} }, { id: 'group', name: 'Home' }])
+  const [, home, other] = await client.sources()
+  assert.deepEqual(home.folder, { id: 'group', name: 'Home', sortOrder: null })
+  assert.equal(other.groupId, 'group2')
+  assert(!Object.hasOwn(other, 'folder'))
+  folderReply = () => response(null, 401)
+  await assert.rejects(client.sources(), { code: 'AUTH_REQUIRED', status: 401 })
+})
+
+test('rejects an incomplete project refresh before loading its folders', async () => {
+  const projects = Array.from({ length: 200 }, (_, i) => ({ id: 'p' + i, name: 'List ' + i, groupId: 'work' }))
+  const { client, calls } = api(({ query }) => response(query.get('offset') === '0' ? projects : [projects[0]]))
+  await assert.rejects(client.sources(), /repeated a list/)
+  assert.deepEqual(calls.map(call => call.path), ['/project', '/project'])
 })
 
 test('reads undated, date-only, point and overlapping ranges across the autumn clock change', async () => {
@@ -111,6 +198,15 @@ test('searches long Inbox ranges without gaps, deduplicates tasks and completes 
 
 test('uses the published Inbox project ID for creation or verifies the alias by ID within Inbox', async () => {
   const draft = { title: 'Follow up', allDay: true, ...day }
+  const published = api(({ path, body }) => {
+    if (path === '/project') return response([source, inbox, { id: 'inbox123', name: 'Eingang' }])
+    assert.equal(path, '/task')
+    assert.equal(body.projectId, 'inbox123')
+    return response({ ...body, id: 'published' })
+  })
+  const lists = await published.client.sources()
+  assert.deepEqual(lists.map(list => list.id), ['inbox123', source.id])
+  assert.equal((await published.client.create(lists[0], draft)).id, 'published')
   const { client } = api(({ path, body }) => {
     if (path === '/task/undone') return response([{ ...original, projectId: 'inbox123' }])
     assert.equal(path, '/task')
@@ -159,7 +255,7 @@ test('moves and resizes the original, keeps details and confirms completion by I
   item = await client.update(source, item, { title: original.title, allDay: true, start: '2026-10-24', end: '2026-10-27' })
   assert.equal(task.startDate, '2026-10-24T00:00:00+0200')
   assert.equal(task.dueDate, '2026-10-26T00:00:00+0100')
-  for (const key of ['id', 'projectId', 'title', 'content', 'desc', 'items', 'tags', 'priority', 'parentId', 'reminders']) {
+  for (const key of ['id', 'projectId', 'title', 'content', 'desc', 'items', 'tags', 'priority', 'sortOrder', 'parentId', 'reminders']) {
     assert.deepEqual(task[key], original[key])
   }
   const completed = await client.complete(source, item)

@@ -1,7 +1,7 @@
 {
   "name": "calendar-central",
   "productName": "Calendar Central",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A Mac calendar for TickTick tasks, Google appointments and work meetings",
   "private": true,
   "type": "module",

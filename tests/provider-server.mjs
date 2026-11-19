@@ -12,7 +12,20 @@ export async function startProviderServer() {
   const day = civilDay(), zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const midnight = tickStamp(stamp(day, 0));
   const originals = new Map();
-  const projects = [{ id: 'planning', name: 'Planning tasks', permission: 'write', color: '#138179' }];
+  const projectGroups = [
+    { id: 'archive', name: 'Archive', sortOrder: 900 },
+    { id: 'personal', name: 'Personal', sortOrder: 400 },
+    { id: 'work', name: 'Work', sortOrder: 100 },
+  ];
+  const projects = [
+    { id: 'errands', name: 'Errands', groupId: 'personal', sortOrder: 20 },
+    { id: 'planning', name: 'Planning tasks', groupId: 'work', sortOrder: 40, color: '#138179' },
+    { id: 'reference', name: 'Reference files', groupId: 'archive', sortOrder: 10 },
+    { id: 'desk', name: 'On my desk', sortOrder: 200 },
+    { id: 'briefs', name: 'Briefs', groupId: 'work', sortOrder: -20 },
+    { id: 'templates', name: 'Templates', sortOrder: -100 },
+    { id: 'closed', name: 'Closed tasks', groupId: 'archive', sortOrder: 20, closed: true },
+  ].map(project => ({ permission: 'write', ...project }));
   originals.set('review', { id: 'review', projectId: 'planning', title: 'Review the launch plan', content: 'Keep these notes.',
     items: [{ id: 'checklist-one', title: 'Check the agenda', status: 0 }], tags: ['planning'], priority: 3,
     startDate: midnight, dueDate: midnight, timeZone: zone, isAllDay: true, status: 0 });
@@ -20,6 +33,13 @@ export async function startProviderServer() {
     startDate: tickStamp(stamp(day, 14)), dueDate: tickStamp(stamp(day, 14, 45)), timeZone: zone, isAllDay: false });
   originals.set('inbox-one', { id: 'inbox-one', projectId: 'inbox-user', title: 'Read studio brief', status: 0,
     startDate: midnight, dueDate: midnight, timeZone: zone, isAllDay: true });
+  for (const [id, projectId, title] of [
+    ['brief-task', 'briefs', 'Read the design brief'],
+    ['errand-task', 'errands', 'Collect the parcel'],
+    ['closed-task', 'closed', 'Old research notes'],
+  ]) {
+    originals.set(id, { id, projectId, title, status: 0, startDate: midnight, dueDate: midnight, timeZone: zone, isAllDay: true });
+  }
   const calendars = [
     { id: 'studio@example.test', summary: 'Studio', accessRole: 'owner', primary: true, backgroundColor: '#366aba' },
     { id: 'bmw-copy', summary: 'BMW Work', accessRole: 'writer', backgroundColor: '#bb7046' },
@@ -131,7 +151,12 @@ export async function startProviderServer() {
         if (method === 'DELETE') { entries.delete(id); return json(204); }
       } else {
         const [first, second, third, id, action] = parts;
-        if (first === 'project' && !second) return json(200, projects);
+        if (first === 'project' && !second) {
+          const offset = Number(u.searchParams.get('offset') || 0);
+          const limit = Number(u.searchParams.get('limit') || 50);
+          return json(200, projects.slice(offset, offset + limit));
+        }
+        if (first === 'project' && second === 'group' && parts.length === 2) return json(200, projectGroups);
         if (first === 'project' && third === 'data') return json(200, { project: projects.find(p => p.id === second), tasks: [...originals.values()].filter(t => t.projectId === second && !t.status) });
         if (first === 'project' && third === 'task') {
           const original = originals.get(id);
@@ -162,5 +187,5 @@ export async function startProviderServer() {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   origin = 'http://127.0.0.1:' + server.address().port;
-  return { origin, day, originals, events, controls, close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
+  return { origin, day, originals, events, projects, projectGroups, controls, close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
 }

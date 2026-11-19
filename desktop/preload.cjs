@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-const operations = ['state', 'connect', 'macGoogleCalendars', 'openInternetAccounts', 'disconnect', 'setSource', 'save', 'complete', 'remove', 'hide', 'restore', 'acknowledge'];
+const operations = ['state', 'connect', 'macGoogleCalendars', 'openInternetAccounts', 'disconnect', 'setSource',
+  'configureTickTick', 'setTickTickCalendarVisible', 'save', 'complete', 'remove', 'hide', 'restore', 'acknowledge'];
 const calendar = {};
 for (const operation of operations) {
   calendar[operation] = async input => {

@@ -145,7 +145,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } });
   app.whenReady().then(async () => {
     const service = new CalendarService(new Profile(app.getPath('userData'), safeStorage), registry);
-    for (const action of ['state', 'connect', 'macGoogleCalendars', 'openInternetAccounts', 'disconnect', 'setSource', 'save', 'complete', 'remove', 'hide', 'restore', 'acknowledge']) {
+    for (const action of ['state', 'connect', 'macGoogleCalendars', 'openInternetAccounts', 'disconnect', 'setSource',
+      'configureTickTick', 'setTickTickCalendarVisible', 'save', 'complete', 'remove', 'hide', 'restore', 'acknowledge']) {
       ipcMain.handle('calendar:' + action, async (event, input) => {
         if (event.sender !== mainWindow?.webContents || event.senderFrame !== mainWindow.webContents.mainFrame
           || event.senderFrame.url !== pathToFileURL(index).href) throw new Error('Unknown calendar window.');

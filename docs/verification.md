@@ -1,4 +1,6 @@
-# First Mac build verification
+# Mac build verification
+
+## First release
 
 On 19 November 2026, Calendar Central 0.1.0 ran on Apple Silicon with macOS 27.0.1 and the Europe/Berlin time zone. macOS LaunchServices opened the locally signed app with its saved connections. All 43 unit tests passed. [Launch result](../build/verification/launch-services.json)
 
@@ -25,3 +27,11 @@ The live run used a new TickTick list and Google calendar, both named **Calendar
 - **BMW Exchange** was unavailable on this Mac. A disposable Google calendar marked read-only exercised the work-calendar fallback, including an external move, refresh and restart. [Packaged live steps](../build/verification/live/cd014f57-6168-42a7-98ff-b8eeb3839ef3.json)
 
 The test destinations are available for another run. The TickTick task is complete, and the Google appointment is deleted.
+
+## TickTick account calendars
+
+Version 0.2.0 passed all eight user journeys on Apple Silicon with macOS 27.0.1. The packaged test used fresh profiles and synthetic providers. It verified one account calendar, native folder and list order, searching collapsed folders, remembered filters, custom calendars, and creating a task in its original list. Moving a list or renaming and reordering a folder at the provider updated the picker. [Packaged run](../build/verification/desktop-2026-11-19T10-51-17-121Z/report.json) · [Folder picker](../build/verification/desktop-2026-11-19T10-51-17-121Z/ticktick-list-folders.png) · [Custom calendars](../build/verification/desktop-2026-11-19T10-51-17-121Z/ticktick-custom-calendars.png)
+
+All 57 unit tests passed. A 54-list fixture checked that switching a recently loaded calendar off and on makes no provider requests. An explicit refresh still checks every visible list. Migration checks covered earlier list selections and local restrictions.
+
+The installed app showed one TickTick calendar after upgrading. Its 54 task lists and seven folders matched the native account order, with Inbox shown separately. The previous seven selected lists and one selected Google calendar were preserved. The live check expanded a folder and cancelled the picker. [Live account check](../build/verification/ticktick-folder-order.json)

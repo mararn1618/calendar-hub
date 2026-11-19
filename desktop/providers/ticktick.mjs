@@ -25,6 +25,16 @@ function failure(message, code, status) {
   return Object.assign(new Error(message), { code, status })
 }
 
+function parseProjectMetadata(text) {
+  return JSON.parse(text, (key, value, context) => {
+    if (key !== 'sortOrder') return value
+    const raw = typeof value === 'number' ? context.source : value
+    if (typeof raw !== 'string' || !/^-?\d{1,19}$/.test(raw)) return null
+    const order = BigInt(raw)
+    return BigInt.asIntN(64, order) === order ? String(order) : null
+  })
+}
+
 function conflict() {
   return failure('This task changed in TickTick. Refresh it before editing.', 'CONFLICT')
 }
@@ -214,7 +224,7 @@ export function createTickTick({
   const base = apiBase.replace(/\/+$/, '')
   let inboxProjectId
 
-  async function request(path, { method = 'GET', body, write = false } = {}) {
+  async function request(path, { method = 'GET', body, write = false, parse = JSON.parse } = {}) {
     if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
       throw failure('TickTick sign-in expired. Choose Reconnect in Calendars.', 'AUTH_REQUIRED')
     }
@@ -250,19 +260,38 @@ export function createTickTick({
     }
     try {
       const text = await response.text()
-      return text.trim() ? JSON.parse(text) : null
+      return text.trim() ? parse(text) : null
     } catch {
       if (write) throw failure('TickTick sent an unreadable reply. Check the original task before trying again.', 'UNCERTAIN')
       throw new Error('TickTick sent an unreadable reply. Refresh this list.')
     }
   }
 
+  async function projectFolders() {
+    const folders = new Map()
+    let groups
+    try {
+      groups = await request('/project/group', { parse: parseProjectMetadata })
+    } catch (error) {
+      if (error.code === 'AUTH_REQUIRED') throw error
+      return folders
+    }
+    if (!Array.isArray(groups)) return folders
+    for (const group of groups) {
+      if (typeof group?.id !== 'string') continue
+      const usable = !folders.has(group.id) && typeof group.name === 'string' && group.name.trim()
+      folders.set(group.id, usable ? { id: group.id, name: group.name, sortOrder: group.sortOrder ?? null } : null)
+    }
+    return folders
+  }
+
   async function sources() {
     const lists = []
     const seen = new Set()
     const limit = 200
+    let inboxList
     for (let offset = 0; ; offset += limit) {
-      const page = await request('/project?offset=' + offset + '&limit=' + limit)
+      const page = await request('/project?offset=' + offset + '&limit=' + limit, { parse: parseProjectMetadata })
       if (!Array.isArray(page) || page.length > limit) throw new Error('TickTick returned an invalid list page.')
       for (const project of page) {
         if (!object(project)) throw new Error('TickTick returned an invalid list.')
@@ -272,17 +301,30 @@ export function createTickTick({
         if (typeof project.name !== 'string') throw new Error('TickTick returned a list without a name.')
         if (project.kind?.toUpperCase() === 'NOTE') continue
         const inbox = project.id === inboxProjectId || /^inbox(?:\d+)?$/.test(project.id)
-        if (inbox && project.id !== 'inbox') inboxProjectId = project.id
-        lists.push({
+        const groupId = inbox || project.groupId == null || project.groupId === '' ? null : id(project.groupId)
+        const archived = Boolean(project.closed)
+        const list = {
           id: project.id, name: project.name, color: project.color,
-          writable: !project.closed && (project.permission == null || project.permission === 'write'),
-          ...(inbox ? { inbox: true } : {}),
-        })
+          writable: !archived && (project.permission == null || project.permission === 'write'),
+          groupId, sortOrder: project.sortOrder ?? null, archived, inbox,
+        }
+        if (!inbox) lists.push(list)
+        else if (!inboxList || inboxList.id === 'inbox') inboxList = list
+        else if (project.id !== 'inbox') throw new Error('TickTick returned different Inbox identifiers.')
       }
       if (page.length < limit) break
     }
-    if (!lists.some(isInbox)) lists.unshift({ id: 'inbox', name: 'Inbox', writable: true })
-    return lists
+    if (lists.some(list => list.groupId !== null)) {
+      const folders = await projectFolders()
+      for (const list of lists) {
+        const folder = folders.get(list.groupId)
+        if (folder) list.folder = folder
+      }
+    }
+    if (inboxList && inboxList.id !== 'inbox') inboxProjectId = inboxList.id
+    return [inboxList ?? {
+      id: 'inbox', name: 'Inbox', writable: true, groupId: null, sortOrder: null, archived: false, inbox: true,
+    }, ...lists]
   }
 
   async function inboxTasks(start, end, taskIds) {

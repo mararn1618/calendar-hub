@@ -100,6 +100,9 @@ button.destructive:hover { background: #8a2b30; }
 #source-list { overflow-y: auto; min-height: 0; padding: 0 1px; }
 .sidebar-group { padding-bottom: 13px; }
 .sidebar-group h3 { margin: 8px 4px 5px; color: var(--muted); font-size: 11px; font-weight: 570; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-calendar-heading { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.sidebar-calendar-heading > .source-toggle { flex: 1; }
+.sidebar-calendar-heading .icon-button { flex: none; }
 .source-toggle { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 28px; padding: 3px 5px; border-radius: 5px; }
 .source-toggle:hover { background: #233c4210; }
 .source-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -248,6 +251,8 @@ dialog::backdrop { background: #24343c38; }
 .settings-source .source-toggle:hover { background: none; }
 .settings-source .i-lock { margin-left: 0; }
 .settings-source .readonly-control { gap: 6px; font-size: 11px; color: var(--muted); }
+.settings-list-filter { display: flex; align-items: center; justify-content: space-between; padding: 3px 10px; border-top: 1px solid #edf0f1; }
+.settings-list-filter .text-button { font-size: 12px; }
 .source-error { flex: 0 0 100%; font-size: 11px; color: #855a25; }
 .policy-help { background: #fafcfc; border-top: 1px solid #edf0f1; }
 .provider-options { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 7px; }
@@ -268,6 +273,46 @@ dialog::backdrop { background: #24343c38; }
 .field select:disabled { color: var(--muted); background: #f6f8f9; opacity: 1; }
 .check-field { display: flex; align-items: center; gap: 8px; min-height: 21px; font-size: 13px; }
 .check-field input { margin: 0; width: 15px; height: 15px; accent-color: var(--accent); }
+.ticktick-dialog { height: min(680px,84vh); }
+.ticktick-dialog .dialog-body { flex: 1; padding-block: 15px; }
+.ticktick-editor, .included-lists, .list-picker { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.ticktick-editor { gap: 16px; }
+.calendar-mode-section { display: grid; justify-items: start; gap: 6px; }
+.calendar-modes { margin-block: 1px; }
+.calendar-modes button { padding-inline: 14px; }
+.custom-calendars { display: flex; flex-direction: column; min-height: 28px; max-height: min(22vh,165px); }
+.custom-calendars .text-button, .list-bulk-actions .text-button { min-height: 23px; padding-block: 1px; font-size: 12px; }
+.custom-calendar-list { display: grid; overflow-y: auto; min-height: 0; gap: 3px; }
+.custom-calendar-row { justify-content: flex-start; min-width: 0; padding: 4px 8px; background: #f7f9fa; }
+.custom-calendar-row .i-right { color: var(--muted); }
+.included-lists { gap: 6px; }
+.list-count, .folder-count, .directory-note { font-size: 11px; color: var(--muted); font-weight: 450; font-variant-numeric: tabular-nums; }
+.list-bulk-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.list-bulk-actions .check-field { font-size: 12px; }
+.list-picker { gap: 7px; }
+.list-search { flex: none; width: 100%; height: 32px; padding: 4px 9px; border: 1px solid #cbd6d9; border-radius: 6px; background: #fff; }
+.list-directory { flex: 1; min-height: 68px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: 7px; padding-block: 3px; }
+.folder-heading, .directory-list { display: flex; align-items: center; gap: 8px; padding-right: 11px; }
+.folder-heading:hover, .directory-list:hover { background: #f1f6f6; }
+.folder-disclosure { flex: 1; min-width: 0; min-height: 32px; justify-content: flex-start; padding: 4px 0 4px 8px; gap: 7px; background: transparent; border: 0; border-radius: 4px; }
+.folder-disclosure:hover { background: transparent; }
+.folder-disclosure .i-right { width: 12px; color: #738189; }
+.folder-disclosure .i-right::before { width: 5px; height: 5px; top: 5px; left: 2px; }
+.folder-disclosure[aria-expanded=true] .i-right { transform: rotate(90deg); }
+.directory-list { min-height: 30px; padding-left: 27px; }
+.folder-lists .directory-list { padding-left: 47px; }
+.directory-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.directory-note { max-width: 36%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.directory-list[data-archived=true] .directory-name { color: var(--muted); }
+.directory-check { flex: none; width: 15px; height: 15px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.directory-empty { padding: 16px; text-align: center; }
+.i-folder { color: #73858e; }
+.i-folder::before { inset: 4px 1px 2px; border: 1.25px solid currentColor; border-radius: 2px; }
+.i-folder::after { left: 1px; top: 2px; width: 6px; height: 3px; border: solid currentColor; border-width: 1.25px 1.25px 0; border-radius: 2px 2px 0 0; background: white; }
+.i-list { background: linear-gradient(currentColor,currentColor) 5px 4px / 9px 1.5px no-repeat, linear-gradient(currentColor,currentColor) 5px 8px / 9px 1.5px no-repeat, linear-gradient(currentColor,currentColor) 5px 12px / 9px 1.5px no-repeat; }
+.i-list::before { width: 2px; height: 2px; left: 1px; top: 3.75px; border-radius: 50%; background: currentColor; box-shadow: 0 4px, 0 8px; }
+.i-inbox::before { inset: 3px 1px 2px; border: 1.35px solid currentColor; border-radius: 3px; }
+.i-inbox::after { top: 8px; left: 4px; width: 6px; height: 2px; border: solid currentColor; border-width: 0 1px 1.3px; border-radius: 0 0 3px 3px; }
 .timing-fields { display: flex; flex-direction: column; gap: 10px; }
 .timing-row { display: flex; gap: 8px; align-items: flex-end; }
 .timing-row > .field:first-child { flex: 1 1 auto; }
@@ -307,6 +352,13 @@ dialog::backdrop { background: #24343c38; }
   .view-bar { padding-inline: 20px; }
 }
 @media (max-height: 680px) {
+  dialog.ticktick-dialog { height: calc(100vh - 24px); max-height: calc(100vh - 24px); }
+  .ticktick-dialog .dialog-head, .ticktick-dialog .dialog-footer, .ticktick-dialog .dialog-body { padding-block: 10px; }
+  .ticktick-editor { gap: 9px; }
+  .calendar-mode-section { grid-template-columns: auto 1fr; align-items: center; gap: 3px 10px; }
+  .calendar-mode-section .help { grid-column: 1 / -1; }
+  .custom-calendars { max-height: 85px; }
+  .custom-calendar-list { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .brand { padding-block: 15px 12px; }
   .new-item { margin-bottom: 11px; }
   .main-head { padding-block: 13px 10px; }

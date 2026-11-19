@@ -1,5 +1,7 @@
-import { $, button, completable, deletable, editable, element, errorText, healthFor, icon, iconButton, providerMark, providers, sourceCheckbox, writable } from './dom.js';
+import { $, button, completable, deletable, editable, element, errorText, healthFor, icon, iconButton, providerMark, providers, sourceCheckbox, tickTickCalendarCheckbox, writable } from './dom.js';
 import { MINUTE, SLOT, addDays, differenceInDays, formatDate, localDate, localTime, possibleInstants, zoneOffset } from './dates.js';
+import { createTickTickEditor } from './ticktick-editor.js';
+import { listCount, tickTickSections } from './ticktick-lists.js';
 
 const dateFormat = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' };
 const asISO = value => new Date(value).toISOString();
@@ -65,7 +67,8 @@ export function createPanels(actions) {
   function close() {
     if (dialog.open) dialog.close();
     kind = undefined;
-    if (opener?.isConnected) opener.focus({ preventScroll: true });
+    const target = opener?.isConnected ? opener : document.getElementById(opener?.id || '');
+    target?.focus({ preventScroll: true });
   }
 
   function panel(type, title, options = {}) {
@@ -132,8 +135,9 @@ export function createPanels(actions) {
   });
 
   function settings() {
+    const scroll = dialog.open && kind === 'settings' ? body.scrollTop : 0;
     panel('settings', 'Calendars', { wide: true });
-    const { connections, sources, health } = state();
+    const { connections, sources, ticktickCalendars, health } = state();
     if (connections.length) {
       body.append(element('p', 'help', 'Choose the calendars and task lists to show. Keep the TickTick copy calendar off when its original list is selected.'));
     }
@@ -148,6 +152,24 @@ export function createPanels(actions) {
       heading.append(button('Disconnect', () => disconnect(connection), 'text-button subdued'));
       group.append(heading);
       const listed = sources.filter(source => source.connectionId === connection.id);
+      if (connection.provider === 'ticktick') {
+        for (const calendar of ticktickCalendars.filter(calendar => calendar.connectionId === connection.id)) {
+          const row = element('div', 'settings-source');
+          row.append(tickTickCalendarCheckbox(calendar, visible => {
+            write('setTickTickCalendarVisible', { connectionId: connection.id, calendarId: calendar.id, visible }, settings, text => {
+              settings();
+              warning(text);
+            });
+          }, health));
+          group.append(row);
+        }
+        const filter = element('div', 'settings-list-filter');
+        filter.append(element('span', 'help', listCount(listed.filter(source => source.included).length) + ' included'),
+          button('Edit lists', () => tickTickLists(connection.id, true), 'text-button'));
+        group.append(filter);
+        body.append(group);
+        continue;
+      }
       if (!listed.length) group.append(element('p', 'help', 'No calendars are available from this connection yet.'));
       for (const source of listed) {
         const row = element('div', 'settings-source');
@@ -181,6 +203,20 @@ export function createPanels(actions) {
     }
     body.append(options);
     footer.append(button('Hidden items', hiddenItems, 'text-button'), button('Done', close, 'primary'));
+    body.scrollTop = scroll;
+  }
+  function tickTickLists(connectionId, fromSettings = false) {
+    const connection = state().connections.find(connection => connection.id === connectionId);
+    if (!connection) return settings();
+    const cancel = fromSettings ? settings : close;
+    let editor;
+    panel('ticktick', 'TickTick calendars', { wide: true, back: () => editor.back() });
+    dialog.classList.add('ticktick-dialog');
+    editor = createTickTickEditor({
+      connection, sources: state().sources.filter(source => source.connectionId === connectionId),
+      heading: $('#dialog-title'), body, footer, cancel, clearError: () => { message.hidden = true; },
+      save: patch => write('configureTickTick', { connectionId, ...patch }, cancel)
+    });
   }
   function setSource(source, patch) {
     write('setSource', { sourceId: source.id, ...patch }, settings, text => {
@@ -344,7 +380,8 @@ export function createPanels(actions) {
       return;
     }
     if (!allowed) {
-      body.append(element('strong', 'details-title', item.title), element('p', 'detail-dates', spanDescription(item)), element('p', 'help', source.name + ' · ' + providers[source.provider]));
+      const location = [providers[source.provider], source.folder?.name, source.name].filter(Boolean).join(' · ');
+      body.append(element('strong', 'details-title', item.title), element('p', 'detail-dates', spanDescription(item)), element('p', 'help', location));
       const reason = source.provider === 'ticktick' && item.recurring ? 'Open this recurring task in TickTick to change its schedule or completion.' :
         item.completed ? 'This task is complete.' : 'This item is read-only in Calendar Central.';
       body.append(element('p', 'inline-note', reason));
@@ -366,19 +403,44 @@ export function createPanels(actions) {
     title.required = true;
     const destination = element('select');
     destination.id = 'item-calendar';
-    for (const provider of Object.keys(providers)) {
-      const subset = choices.filter(choice => choice.provider === provider);
-      if (!subset.length) continue;
+    function addGroup(label, sources, connectionId, folderId) {
       const group = element('optgroup');
-      group.label = providers[provider];
-      for (const choice of subset) {
-        const option = element('option', '', choice.name);
-        option.value = choice.id;
+      group.label = label;
+      if (connectionId) group.dataset.connectionId = connectionId;
+      if (folderId) group.dataset.folderId = folderId;
+      for (const source of sources) {
+        const option = element('option', '', source.name);
+        option.value = source.id;
         group.append(option);
       }
       destination.append(group);
     }
+    for (const provider of Object.keys(providers)) {
+      const subset = choices.filter(choice => choice.provider === provider);
+      if (!subset.length) continue;
+      if (provider !== 'ticktick') {
+        addGroup(providers[provider], subset);
+        continue;
+      }
+      for (const connection of state().connections.filter(row => row.provider === 'ticktick')) {
+        const account = connection.name === 'TickTick' ? 'TickTick' : 'TickTick · ' + connection.name;
+        for (const section of tickTickSections(subset.filter(source => source.connectionId === connection.id))) {
+          addGroup(section.id ? account + ' / ' + section.name : account, section.sources, connection.id, section.id);
+        }
+      }
+    }
     destination.disabled = Boolean(item);
+    const destinationLabel = item ? (source.provider === 'ticktick' ? 'TickTick list' : 'Calendar') : 'Calendar or task list';
+    const destinationField = field(destinationLabel, destination);
+    const location = element('span', 'help destination-context');
+    destinationField.append(location);
+    function showDestination() {
+      const group = destination.selectedOptions[0]?.parentElement;
+      location.hidden = !group?.dataset.connectionId;
+      location.textContent = location.hidden ? '' : group.label;
+    }
+    destination.addEventListener('change', showDestination);
+    showDestination();
     const allDay = check('All day', original.allDay);
     allDay.control.id = 'all-day';
     const timing = element('div', 'timing-fields');
@@ -402,7 +464,7 @@ export function createPanels(actions) {
       parts[edge] = { date, time, timeField, offset, offsetField };
     }
     const help = element('p', 'help timing-help');
-    form.append(field('Title', title), field('Calendar', destination), allDay.row, timing, help);
+    form.append(field('Title', title), destinationField, allDay.row, timing, help);
     function updateTimes() {
       for (const edge of ['start', 'end']) {
         const { date, time, timeField, offset, offsetField } = parts[edge];
@@ -649,5 +711,5 @@ export function createPanels(actions) {
     else if (kind === 'hidden') hiddenItems();
     else if (kind === 'uncertain') uncertainItems();
   }
-  return { edit, settings, hiddenItems, uncertainItems, menu: itemMenu, closeMenu, sync, reschedule: (item, change) => save(item, { ...itemKey(item), title: item.title, ...change }) };
+  return { edit, settings, tickTickLists, hiddenItems, uncertainItems, menu: itemMenu, closeMenu, sync, reschedule: (item, change) => save(item, { ...itemKey(item), title: item.title, ...change }) };
 }

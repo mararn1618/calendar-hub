@@ -13,6 +13,366 @@ function workspace() {
   return { dates, profile, remote, registry, service: new CalendarService(profile, registry) };
 }
 
+const tickList = (id, details = {}) => ({ id, name: id, writable: true, ...details });
+
+async function tickTickAccount(lists) {
+  const workspaceData = workspace();
+  const { dates, service, remote, profile } = workspaceData;
+  const reads = [];
+  remote.sources = async () => structuredClone(lists);
+  remote.items = async source => {
+    reads.push(source.id);
+    return [{ id: 'task-' + source.id, title: source.name, ...dates, allDay: true,
+      version: 'one', canEdit: true, canComplete: true }];
+  };
+  await service.run('connect', { provider: 'ticktick', name: 'Personal tasks' });
+  const connectionId = profile.data.connections[0].id;
+  return { ...workspaceData, reads, connectionId, sourceId: id => JSON.stringify([connectionId, id]) };
+}
+
+test('one TickTick calendar includes current and new active lists, with independent inclusion and visibility', async () => {
+  const lists = [tickList('studio'), tickList('inbox'), tickList('closed', { writable: false, archived: true })];
+  const { dates, service, profile, connectionId, sourceId, reads } = await tickTickAccount(lists);
+  const state = () => service.run('state', dates);
+  const initial = await state();
+  const [calendar] = initial.ticktickCalendars;
+  assert.equal(initial.ticktickCalendars.length, 1);
+  assert.equal(calendar.name, 'Personal tasks');
+  assert.equal(calendar.visible, true);
+  assert.deepEqual(calendar.sourceIds, ['inbox', 'studio'].map(sourceId));
+  assert.deepEqual(reads, ['inbox', 'studio']);
+  assert.equal(initial.connections[0].ticktick.includesAll, true);
+  assert.equal(initial.sources[0].inbox, true);
+  assert.equal(initial.sources[2].included, false);
+  assert.equal(initial.sources[2].archived, true);
+
+  await service.run('setTickTickCalendarVisible', { connectionId, calendarId: calendar.id, visible: false });
+  lists.push(tickList('new'));
+  reads.length = 0;
+  const hidden = await state();
+  assert.deepEqual(reads, []);
+  assert.deepEqual(hidden.items, []);
+  assert.deepEqual(hidden.ticktickCalendars[0].sourceIds, ['inbox', 'studio', 'new'].map(sourceId));
+  assert.equal(hidden.sources.find(source => source.id === sourceId('new')).included, true);
+  assert(profile.data.sources.every(source => !source.selected));
+  await assert.rejects(service.run('save', { sourceId: sourceId('studio'), title: 'Task', ...dates, allDay: true }), /unselected/);
+
+  const includedSourceIds = ['studio', 'closed'].map(sourceId);
+  await service.run('configureTickTick', { connectionId, includedSourceIds });
+  assert.deepEqual((await state()).items, []);
+  await service.run('setTickTickCalendarVisible', { connectionId, calendarId: calendar.id, visible: true });
+  lists.push(tickList('later'));
+  const subset = await state();
+  assert.deepEqual(subset.items.map(item => item.sourceId), includedSourceIds);
+  assert.deepEqual(subset.connections[0].ticktick.includedSourceIds, includedSourceIds);
+  assert.equal(subset.connections[0].ticktick.includesAll, false);
+  assert.equal(subset.items.find(item => item.sourceId === sourceId('closed')).canEdit, false);
+});
+
+test('old TickTick selections migrate before discovery with unavailable lists and local records intact', async () => {
+  const lists = [tickList('inbox'), tickList('chosen'), tickList('other')];
+  const { dates, service, profile, registry, connectionId, sourceId } = await tickTickAccount(lists);
+  await service.run('state', dates);
+  const previous = structuredClone(profile.data);
+  delete previous.connections[0].ticktick;
+  for (const source of previous.sources) {
+    delete source.included;
+    delete source.calendarId;
+    delete source.localReadOnly;
+    source.selected = source.id === sourceId('chosen');
+    source.readOnly = source.selected;
+  }
+  previous.unavailableSourceSettings[sourceId('temporarily-gone')] = { selected: true, readOnly: true };
+  previous.hidden = [{ sourceId: sourceId('chosen'), id: 'task-chosen', title: 'chosen' }];
+  previous.journal = [{ id: 'uncertain', connectionId, sourceId: sourceId('chosen'), targetId: 'task-chosen', kind: 'update' }];
+  const recovered = new CalendarService({ ...profile, data: previous }, registry);
+  const cache = previous.cache[sourceId('chosen')];
+  lists.push(tickList('temporarily-gone'), tickList('just-added'));
+  const view = await recovered.run('state', dates);
+  assert.deepEqual(view.connections[0].ticktick.includedSourceIds, ['chosen', 'temporarily-gone'].map(sourceId));
+  assert.equal(view.ticktickCalendars[0].visible, true);
+  assert.deepEqual(view.items.map(item => item.sourceId), [sourceId('temporarily-gone')]);
+  assert(view.sources.filter(source => source.selected).every(source => source.readOnly));
+  assert.equal(previous.cache[sourceId('chosen')], cache);
+  assert.deepEqual(view.hidden, previous.hidden);
+  assert.deepEqual(view.uncertain.map(record => record.id), ['uncertain']);
+  assert.deepEqual(previous.sources.filter(source => source.selected).map(source => source.id), ['chosen', 'temporarily-gone'].map(sourceId));
+});
+
+test('an old TickTick account with nothing selected stays off until the account is shown', async () => {
+  const lists = [tickList('inbox'), tickList('projects')];
+  const { profile, registry, dates, connectionId, sourceId, reads } = await tickTickAccount(lists);
+  delete profile.data.connections[0].ticktick;
+  for (const source of profile.data.sources) source.selected = false;
+  const service = new CalendarService(profile, registry);
+  const view = await service.run('state', dates);
+  const [calendar] = view.ticktickCalendars;
+  assert.equal(calendar.visible, false);
+  assert.equal(view.connections[0].ticktick.includesAll, true);
+  assert.deepEqual(view.items, []);
+  assert.deepEqual(reads, []);
+  await service.run('setTickTickCalendarVisible', { connectionId, calendarId: calendar.id, visible: true });
+  assert.deepEqual((await service.run('state', dates)).items.map(item => item.sourceId), ['inbox', 'projects'].map(sourceId));
+});
+
+test('native folder order, identity and visibility follow rediscovery, renames, moves and pauses in folder metadata', async () => {
+  const early = '9007199254740992', late = '9007199254740993';
+  const folder = { id: 'folder', name: 'Work', sortOrder: early };
+  const lists = [tickList('root-a', { sortOrder: late }),
+    tickList('child-b', { groupId: folder.id, folder, sortOrder: late }),
+    tickList('no-order'), tickList('root-b', { sortOrder: late }),
+    tickList('child-a', { groupId: folder.id, folder, sortOrder: early }), tickList('inbox')];
+  const { dates, service, profile, registry, connectionId, sourceId } = await tickTickAccount(lists);
+  await service.run('configureTickTick', { connectionId, mode: 'folders' });
+  const first = await service.run('state', dates);
+  assert.deepEqual(first.sources.map(source => source.name), ['inbox', 'child-a', 'child-b', 'root-a', 'no-order', 'root-b']);
+  const [unfiled, work] = first.ticktickCalendars;
+  assert.equal(unfiled.name, 'Unfiled lists');
+  assert.deepEqual(work.sourceIds, ['child-a', 'child-b'].map(sourceId));
+  assert.deepEqual(first.sources[1].folder, folder);
+  assert.equal(first.sources[1].sortOrder, early);
+  await service.run('setTickTickCalendarVisible', { connectionId, calendarId: work.id, visible: false });
+
+  lists.reverse();
+  folder.name = 'Work renamed';
+  const renamed = await service.run('state', dates);
+  assert.deepEqual(renamed.sources.filter(source => source.name.startsWith('root-')).map(source => source.name), ['root-b', 'root-a']);
+  const hidden = renamed.ticktickCalendars.find(row => row.id === work.id);
+  assert.equal(hidden.name, folder.name);
+  assert.equal(hidden.color, work.color);
+  assert.equal(hidden.visible, false);
+  assert(!renamed.items.some(item => item.sourceId === sourceId('child-a')));
+
+  const children = lists.filter(list => list.groupId);
+  lists.splice(0, lists.length, ...lists.filter(list => !list.groupId));
+  assert.equal((await service.run('state', dates)).ticktickCalendars.length, 1);
+  const restored = new CalendarService({ ...profile, data: structuredClone(profile.data) }, registry);
+  for (const child of children) delete child.folder;
+  lists.push(...children);
+  const back = await restored.run('state', dates);
+  assert.deepEqual(back.ticktickCalendars.find(row => row.id === work.id), hidden);
+  const moved = children[0];
+  moved.groupId = null;
+  const changed = await restored.run('state', dates);
+  const movedSource = changed.sources.find(source => source.id === sourceId(moved.id));
+  assert.equal(movedSource.groupId, null);
+  assert.equal(movedSource.folder, undefined);
+  assert.equal(movedSource.calendarId, unfiled.id);
+  assert.equal(movedSource.selected, true);
+});
+
+test('custom calendars partition included lists and keep all writes on the original list', async () => {
+  const lists = ['inbox', 'studio', 'home', 'other'].map(id => tickList(id));
+  const { dates, service, profile, registry, remote, connectionId, sourceId, reads } = await tickTickAccount(lists);
+  const groups = [{ id: 'a', name: 'Focus', sourceIds: ['studio', 'home'].map(sourceId) },
+    { id: 'b', name: 'Personal', sourceIds: [sourceId('inbox')] }];
+  await service.run('configureTickTick', { connectionId, mode: 'custom', groups });
+  const view = await service.run('state', dates);
+  const [focus, personal, remainder] = view.ticktickCalendars;
+  assert.deepEqual(view.ticktickCalendars.map(row => row.name), ['Focus', 'Personal', 'Personal tasks']);
+  assert.deepEqual(view.ticktickCalendars.flatMap(row => row.sourceIds).sort(), view.sources.map(source => source.id).sort());
+  assert.notEqual(focus.color, personal.color);
+  assert.deepEqual(reads, lists.map(list => list.id));
+  assert.deepEqual(remainder.sourceIds, [sourceId('other')]);
+  const calls = [];
+  remote.create = async (list, draft) => { calls.push(['create', list.id]); return { ...draft, id: 'new-task' }; };
+  remote.update = async (list, task, draft) => { calls.push(['update', list.id, task.id]); return { ...task, ...draft }; };
+  remote.complete = async (list, task) => { calls.push(['complete', list.id, task.id]); };
+  const item = view.items.find(item => item.sourceId === sourceId('studio'));
+  const draft = { ...dates, allDay: true, title: 'New' };
+  await assert.rejects(service.run('save', { ...draft, sourceId: focus.id }), /unavailable/);
+  await service.run('save', { ...draft, sourceId: sourceId('home') });
+  await service.run('save', { ...item, title: 'Changed' });
+  await service.run('complete', item);
+  assert.deepEqual(calls, [['create', 'home'], ['update', 'studio', 'task-studio'], ['complete', 'studio', 'task-studio']]);
+
+  await service.run('setTickTickCalendarVisible', { connectionId, calendarId: focus.id, visible: false });
+  const edited = [{ ...groups[0], name: 'Focused work' }, groups[1]];
+  await service.run('configureTickTick', { connectionId, groups: edited, includedSourceIds: ['home', 'other'].map(sourceId) });
+  const restored = new CalendarService({ ...profile, data: structuredClone(profile.data) }, registry);
+  const saved = await restored.run('state', dates);
+  assert.deepEqual(saved.ticktickCalendars[0], { ...focus, name: 'Focused work', visible: false, sourceIds: [sourceId('home')] });
+  assert.deepEqual(saved.items.map(item => item.sourceId), [sourceId('other')]);
+  await restored.run('configureTickTick', { connectionId, includedSourceIds: null });
+  lists.push(tickList('new-list'));
+  const all = await restored.run('state', dates);
+  assert.deepEqual(all.ticktickCalendars.find(row => row.id === remainder.id).sourceIds, ['other', 'new-list'].map(sourceId));
+  assert.deepEqual(all.ticktickCalendars[0].sourceIds, groups[0].sourceIds);
+  assert.equal(all.ticktickCalendars[0].visible, false);
+});
+
+test('split calendars have separate accents that survive reordering, restart and renames', async () => {
+  const lists = ['work', 'personal', 'archive', 'clients', 'family', 'study', 'appointments']
+    .map(id => tickList(id, { groupId: id, folder: { id, name: id } }));
+  lists.push(tickList('inbox'));
+  const { service, dates, profile, registry, connectionId } = await tickTickAccount(lists);
+  await service.run('configureTickTick', { connectionId, mode: 'folders' });
+  const { ticktickCalendars } = await service.run('state', dates);
+  const original = new Map(ticktickCalendars.map(calendar => [calendar.id, calendar.color]));
+  assert.equal(new Set(original.values()).size, lists.length);
+  lists.reverse();
+  for (const list of lists) if (list.folder) list.folder.name += ' renamed';
+  const restored = new CalendarService({ ...profile, data: structuredClone(profile.data) }, registry);
+  const next = await restored.run('state', dates);
+  for (const calendar of next.ticktickCalendars) assert.equal(calendar.color, original.get(calendar.id));
+});
+
+test('the generic and published TickTick Inbox keep the same selection and provider write route', async () => {
+  const lists = [tickList('inbox', { inbox: true }), tickList('project')];
+  const { service, dates, connectionId, sourceId, remote } = await tickTickAccount(lists);
+  await service.run('configureTickTick', { connectionId, includedSourceIds: [sourceId('inbox')] });
+  const targets = [];
+  remote.create = async (source, draft) => { targets.push(source.id); return { ...draft, id: 'new' }; };
+  for (const id of ['inbox1234', 'inbox']) {
+    lists[0].id = id;
+    const view = await service.run('state', dates);
+    assert.deepEqual(view.ticktickCalendars[0].sourceIds, [sourceId('inbox')]);
+    assert.equal(view.sources.filter(source => source.inbox).length, 1);
+    await service.run('save', { ...dates, allDay: true, title: 'New', sourceId: sourceId('inbox') });
+  }
+  assert.deepEqual(targets, ['inbox1234', 'inbox1234']);
+});
+
+test('TickTick settings reject foreign sources, overlapping assignments and invalid toggles atomically', async () => {
+  const { dates, service, registry, profile, connectionId, sourceId } = await tickTickAccount([tickList('studio')]);
+  registry.identity = () => 'second-account';
+  await service.run('connect', { provider: 'ticktick', name: 'Second account' });
+  const before = await service.run('state', dates);
+  const foreign = before.sources.find(source => source.connectionId !== connectionId);
+  const group = { id: 'a', name: 'Work', sourceIds: [sourceId('studio')] };
+  for (const fields of [
+    { includedSourceIds: [foreign.id] }, { mode: 'unknown' }, { groups: [{ ...group, name: '   ' }] },
+    { groups: [group, { ...group, id: 'b' }] }, { groups: [group, { ...group, sourceIds: [] }] },
+    { groups: [{ ...group, sourceIds: [foreign.id] }] },
+  ]) await assert.rejects(service.run('configureTickTick', { connectionId, mode: 'custom', ...fields }));
+  await assert.rejects(service.run('setTickTickCalendarVisible', { connectionId, calendarId: foreign.calendarId, visible: false }), /from this TickTick account/);
+  await assert.rejects(service.run('setTickTickCalendarVisible', { connectionId, calendarId: sourceId('studio'), visible: false }));
+  const after = await service.run('state', dates);
+  assert.deepEqual(after.connections, before.connections);
+  assert.deepEqual(after.ticktickCalendars, before.ticktickCalendars);
+  assert(profile.data.sources.every(source => source.selected));
+});
+
+test('TickTick limits parallel reads and coalesces matching refreshes up to the next mutation', async () => {
+  const lists = Array.from({ length: 28 }, (_, index) => tickList('list-' + index));
+  const { service, remote, dates, connectionId } = await tickTickAccount(lists);
+  const reads = [], gate = Promise.withResolvers(), started = Promise.withResolvers();
+  let active = 0, peak = 0;
+  remote.items = async source => {
+    reads.push(source.id);
+    active++;
+    peak = Math.max(active, peak);
+    if (active === 4) started.resolve();
+    await gate.promise;
+    active--;
+    return [];
+  };
+  const first = service.run('state', dates);
+  await started.promise;
+  assert.equal(service.run('state', dates), first);
+  const change = service.run('configureTickTick', { connectionId, includedSourceIds: [] });
+  const afterChange = service.run('state', dates);
+  gate.resolve();
+  const oldView = await first;
+  await change;
+  assert(oldView.sources.every(source => source.selected));
+  assert((await afterChange).sources.every(source => !source.selected));
+  assert.equal(peak, 4);
+  assert.deepEqual(reads, lists.map(list => list.id));
+});
+
+test('TickTick preference changes reuse range health and only fetch lists without recent coverage', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-19T11:00:00Z') });
+  const lists = Array.from({ length: 54 }, (_, index) => tickList('list-' + index));
+  const { service, registry, remote, dates, connectionId, sourceId, profile } = await tickTickAccount(lists);
+  const selected = lists.slice(0, 50).map(list => sourceId(list.id));
+  const calls = { tickDiscovery: 0, googleDiscovery: 0, googleItems: 0, tickItems: [] };
+  const originalItems = remote.items;
+  let failing = false;
+  remote.sources = async () => {
+    calls.tickDiscovery++;
+    if (failing) throw new Error('List directory offline');
+    return structuredClone(lists);
+  };
+  remote.items = async source => {
+    calls.tickItems.push(source.id);
+    if (source.id === 'list-1' || (failing && source.id === 'list-2')) throw new Error('List offline');
+    return originalItems(source);
+  };
+  registry.client = provider => provider === 'ticktick' ? remote : {
+    sources: async () => { calls.googleDiscovery++; return [{ id: 'google', name: 'Meetings', writable: true }]; },
+    items: async () => { calls.googleItems++; return []; },
+  };
+  await service.run('configureTickTick', { connectionId, includedSourceIds: selected });
+  await service.run('connect', { provider: 'google' });
+  await service.run('setSource', { sourceId: profile.data.sources.find(source => source.provider === 'google').id, selected: true });
+  await service.run('state', dates);
+  t.mock.timers.tick(60_000);
+  failing = true;
+  const full = await service.run('state', dates);
+  const checked = full.health.find(entry => entry.sourceId === sourceId('list-2'));
+  assert.equal(checked.state, 'stale');
+  assert.equal(full.health.find(entry => entry.sourceId === sourceId('list-1')).state, 'error');
+  assert(full.health.some(entry => !entry.sourceId && entry.message === 'List directory offline'));
+  const previous = structuredClone(calls);
+  const local = { ...dates, preferencesOnly: true };
+  t.mock.timers.tick(30_000);
+  await service.run('configureTickTick', { connectionId, mode: 'folders' });
+  const sameRange = await service.run('state', local);
+  assert.deepEqual(sameRange.health, full.health);
+  assert.deepEqual(calls, previous);
+
+  const calendarId = sameRange.ticktickCalendars[0].id;
+  await service.run('setTickTickCalendarVisible', { connectionId, calendarId, visible: false });
+  assert.deepEqual((await service.run('state', local)).items, []);
+  await service.run('setTickTickCalendarVisible', { connectionId, calendarId, visible: true });
+  await service.run('configureTickTick', { connectionId, includedSourceIds: [...selected, sourceId('list-50')] });
+  const newlyShown = await service.run('state', local);
+  assert.deepEqual(calls, { ...previous, tickItems: [...previous.tickItems, 'list-50'] });
+  assert.deepEqual(newlyShown.health.find(entry => entry.sourceId === checked.sourceId), checked);
+  assert(newlyShown.items.some(item => item.sourceId === sourceId('list-50')));
+
+  await service.run('configureTickTick', { connectionId, includedSourceIds: selected.slice(1) });
+  await service.run('state', local);
+  t.mock.timers.tick(6 * 60_000);
+  await service.run('configureTickTick', { connectionId, includedSourceIds: selected });
+  await service.run('state', local);
+  assert.deepEqual(calls.tickItems.slice(previous.tickItems.length), ['list-50', 'list-0']);
+  assert.equal(calls.googleDiscovery, previous.googleDiscovery);
+  assert.equal(calls.googleItems, previous.googleItems);
+  assert.equal(calls.tickDiscovery, previous.tickDiscovery);
+
+  failing = false;
+  const cached = service.run('state', local);
+  const refresh = service.run('state', dates);
+  assert.notEqual(cached, refresh);
+  await cached;
+  const current = await refresh;
+  assert.equal(current.health.find(entry => entry.sourceId === checked.sourceId).state, 'current');
+  assert.equal(calls.googleDiscovery, previous.googleDiscovery + 1);
+  assert.equal(calls.googleItems, previous.googleItems + 1);
+  assert.equal(calls.tickDiscovery, previous.tickDiscovery + 1);
+  assert.equal(calls.tickItems.length, previous.tickItems.length + 2 + selected.length);
+});
+
+test('reopened TickTick lists regain their provider permissions and explicit local locks survive rediscovery', async () => {
+  const lists = [tickList('archived', { archived: true, writable: false }), tickList('locked', { writable: false })];
+  const { service, profile, registry, remote, dates, sourceId } = await tickTickAccount(lists);
+  let created = 0;
+  remote.create = async (source, draft) => { created++; return { ...draft, id: 'created' }; };
+  await service.run('setSource', { sourceId: sourceId('locked'), readOnly: true });
+  remote.sources = async () => [];
+  await service.run('state', dates);
+  remote.sources = async () => lists.map(list => ({ ...list, archived: false, writable: true }));
+  const restored = new CalendarService({ ...profile, data: structuredClone(profile.data) }, registry);
+  const view = await restored.run('state', dates);
+  assert(view.sources.every(source => source.selected && source.writable));
+  const draft = { title: 'Reopened', allDay: true, ...dates };
+  await restored.run('save', { ...draft, sourceId: sourceId('archived') });
+  await assert.rejects(restored.run('save', { ...draft, sourceId: sourceId('locked') }), /read-only/);
+  assert.equal(created, 1);
+});
+
 test('local read-only policy blocks source writes and still supports hiding across restart', async () => {
   const { dates, profile, service, registry, remote } = workspace();
   remote.remove = () => assert.fail('read-only deletion reached the provider');
@@ -160,11 +520,15 @@ test('TickTick reconnect replaces a rotated token and keeps the account, choices
 
   await service.run('connect', { provider: 'ticktick', token: 'old-token', name: 'Planning' });
   await service.run('connect', { provider: 'ticktick', token: 'other-saved-token', name: 'Household' });
-  const initial = await service.run('state', dates);
-  const connectionId = initial.connections[0].id;
-  const sourceId = initial.sources.find(source => source.name === 'planning').id;
+  const connected = await service.run('state', dates);
+  const connectionId = connected.connections[0].id;
+  const sourceId = connected.sources.find(source => source.name === 'planning').id;
+  await service.run('configureTickTick', { connectionId, includedSourceIds: [sourceId] });
+  const other = connected.ticktickCalendars.find(calendar => calendar.connectionId !== connectionId);
+  await service.run('setTickTickCalendarVisible', { connectionId: other.connectionId, calendarId: other.id, visible: false });
   await service.run('setSource', { sourceId, selected: true, readOnly: true });
-  const [item] = (await service.run('state', dates)).items;
+  const initial = await service.run('state', dates);
+  const [item] = initial.items;
   await service.run('hide', item);
 
   await service.run('connect', { provider: 'ticktick', connectionId });

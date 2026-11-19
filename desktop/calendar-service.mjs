@@ -1,12 +1,19 @@
 import { randomUUID } from 'node:crypto';
+import { applyTickTickCalendars, configureTickTickSettings, isTickTickInbox, listMetadata, orderedTickTickSources,
+  publicTickTickSettings, retainTickTickFolders, tickTickSettings } from './ticktick-calendars.mjs';
 
 const calendarDay = /^\d{4}-\d{2}-\d{2}$/;
 const isoDay = date => date.toISOString().slice(0, 10);
 const key = (connectionId, remoteId) => JSON.stringify([connectionId, remoteId]);
 const matches = (entry, sourceId, id) => entry.sourceId === sourceId && entry.id === id;
 const currentTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
-const tickTickInbox = source => source?.inbox || /^inbox(?:\d+)?$/.test(source?.id);
-const tickTickInboxId = sources => sources.find(source => tickTickInbox(source) && source.id !== 'inbox')?.id;
+const tickTickInboxId = sources => sources.find(source => isTickTickInbox(source) && source.id !== 'inbox')?.id;
+const preferenceCacheAge = 5 * 60_000;
+
+function currentHealth(source, connection, checkedAt) {
+  return { connectionId: connection.id, sourceId: source.id, state: 'current', checkedAt,
+    message: source.provider === 'mac' || connection.route === 'mac' ? 'Checked the Mac calendar database.' : 'Checked the source.' };
+}
 
 function isDay(value) {
   if (typeof value !== 'string' || !calendarDay.test(value)) return false;
@@ -60,16 +67,41 @@ export class CalendarService {
     this.data.unavailableSourceSettings ??= {};
     this.providers = providers;
     this.clients = new Map();
+    this.tickTickCalendars = new Map();
     this.queue = Promise.resolve();
+    let migrated = false;
+    for (const connection of this.data.connections.filter(entry => entry.provider === 'ticktick')) {
+      if (!connection.ticktick) {
+        connection.ticktick = tickTickSettings(connection.id, this.connectionSources(connection.id), this.data.unavailableSourceSettings);
+        migrated = true;
+      }
+      this.applyTickTickSettings(connection);
+    }
+    if (migrated) this.profile.save();
   }
 
   run(operation, input = {}) {
     if (operation === 'connect') return this.connect(input);
     if (operation === 'macGoogleCalendars') return this.macGoogleCalendars();
+    if (operation === 'state') {
+      const { start, end } = input;
+      const zone = currentTimeZone();
+      const preferencesOnly = input.preferencesOnly === true;
+      const pending = this.pendingState;
+      if (pending && pending.start === start && pending.end === end && pending.zone === zone && pending.preferencesOnly === preferencesOnly) {
+        return pending.result;
+      }
+      const result = this.enqueue(() => this.state(input));
+      this.pendingState = { start, end, zone, preferencesOnly, result };
+      const clear = () => { if (this.pendingState?.result === result) this.pendingState = null; };
+      result.then(clear, clear);
+      return result;
+    }
     return this.enqueue(() => this[operation](input));
   }
 
   enqueue(work) {
+    this.pendingState = null;
     const result = this.queue.then(work);
     this.queue = result.catch(() => {});
     return result;
@@ -91,29 +123,61 @@ export class CalendarService {
     return client;
   }
 
+  connectionSources(connectionId) {
+    return this.data.sources.filter(source => source.connectionId === connectionId);
+  }
+
+  applyTickTickSettings(connection) {
+    this.tickTickCalendars.set(connection.id, applyTickTickCalendars(connection, this.connectionSources(connection.id)));
+  }
+
   updateSources(connection, discovered) {
     const present = new Set();
     const unavailable = this.data.unavailableSourceSettings;
-    for (const remote of discovered) {
-      const id = key(connection.id, remote.id);
+    const tickTick = connection.provider === 'ticktick';
+    const previousSources = this.connectionSources(connection.id);
+    const previousById = new Map(previousSources.map(source => [source.id, source]));
+    const previousInbox = tickTick && previousSources.find(source => isTickTickInbox(source.remote));
+    const discoveryOrder = [];
+    if (tickTick) discovered = retainTickTickFolders(connection.id, previousSources, unavailable, discovered);
+    for (let remote of discovered) {
+      let id = key(connection.id, remote.id);
+      if (previousInbox && isTickTickInbox(remote) && (remote.id === previousInbox.remoteId || remote.id === 'inbox' || previousInbox.remoteId === 'inbox')) {
+        id = previousInbox.id;
+        if (remote.id === 'inbox') remote = { ...remote, id: previousInbox.remoteId, inbox: true };
+      }
       present.add(id);
-      const previous = this.data.sources.find(source => source.id === id);
+      let source = previousById.get(id);
+      const settings = source ?? unavailable[id];
       const details = {
         id, remoteId: remote.id, connectionId: connection.id, provider: connection.provider,
         name: remote.name, color: remote.color, writable: Boolean(remote.writable), remote
       };
-      if (previous) Object.assign(previous, details);
+      if (tickTick) {
+        details.localReadOnly = settings?.localReadOnly ?? (settings?.readOnly === true && settings.writable !== false);
+        details.readOnly = details.localReadOnly || !details.writable;
+      }
+      if (source) Object.assign(source, details);
       else {
-        const settings = unavailable[id] ?? { selected: false, readOnly: !remote.writable };
-        this.data.sources.push({ ...details, ...settings });
+        source = { ...details, selected: settings?.selected ?? false, readOnly: details.readOnly ?? settings?.readOnly ?? !remote.writable };
+        this.data.sources.push(source);
         delete unavailable[id];
       }
+      if (tickTick) discoveryOrder.push(source);
     }
     this.data.sources = this.data.sources.filter(source => {
       if (source.connectionId !== connection.id || present.has(source.id)) return true;
-      unavailable[source.id] = { selected: source.selected, readOnly: source.readOnly };
+      unavailable[source.id] = { selected: source.selected, readOnly: source.readOnly,
+        ...(tickTick && { localReadOnly: source.localReadOnly ?? (source.readOnly && source.writable) }),
+        ...(tickTick && source.remote.folder && { folder: source.remote.folder }) };
       return false;
     });
+    if (tickTick) {
+      const ordered = orderedTickTickSources(discoveryOrder);
+      let index = 0;
+      this.data.sources = this.data.sources.map(source => source.connectionId === connection.id ? ordered[index++] : source);
+      this.applyTickTickSettings(connection);
+    }
   }
 
   async connect(input) {
@@ -150,10 +214,10 @@ export class CalendarService {
     const discoveredInbox = tickTickInboxId(discovered);
     if (previousInbox && discoveredInbox) return previousInbox === discoveredInbox;
 
-    const projects = new Set(discovered.filter(source => !tickTickInbox(source)).map(source => source.id));
-    const otherProjects = new Set(known.filter(source => source.connectionId !== connection.id && !tickTickInbox(source.remote))
+    const projects = new Set(discovered.filter(source => !isTickTickInbox(source)).map(source => source.id));
+    const otherProjects = new Set(known.filter(source => source.connectionId !== connection.id && !isTickTickInbox(source.remote))
       .map(source => source.remoteId));
-    return previous.some(source => !tickTickInbox(source.remote) && projects.has(source.remoteId) && !otherProjects.has(source.remoteId));
+    return previous.some(source => !isTickTickInbox(source.remote) && projects.has(source.remoteId) && !otherProjects.has(source.remoteId));
   }
 
   storeConnection({ input, secret, client, discovered, accountKey, timeZone, previousSecret }) {
@@ -174,6 +238,7 @@ export class CalendarService {
     const encrypted = this.profile.seal(secret);
     if (!connection) {
       connection = { id: randomUUID(), provider, accountKey, name, secret: encrypted };
+      if (provider === 'ticktick') connection.ticktick = tickTickSettings(connection.id, [], {}, true);
       this.data.connections.push(connection);
     } else Object.assign(connection, { accountKey, name, secret: encrypted });
     if (secret.route === 'mac') connection.route = 'mac';
@@ -201,13 +266,50 @@ export class CalendarService {
       if (belongs(id)) delete this.data.unavailableSourceSettings[id];
     }
     this.clients.delete(connectionId);
+    this.tickTickCalendars.delete(connectionId);
     this.profile.save();
   }
 
   setSource({ sourceId, selected, readOnly }) {
     const source = this.source(sourceId);
-    if (typeof selected === 'boolean') source.selected = selected;
-    if (typeof readOnly === 'boolean') source.readOnly = !source.writable || readOnly;
+    if (typeof selected === 'boolean') {
+      if (source.provider === 'ticktick') {
+        if (selected !== source.included) {
+          const connection = this.tickTickConnection('ticktick', source.connectionId);
+          const included = new Set(connection.ticktick.includedSourceIds ?? this.connectionSources(connection.id)
+            .filter(entry => entry.included).map(entry => entry.id));
+          if (selected) included.add(sourceId);
+          else included.delete(sourceId);
+          connection.ticktick.includedSourceIds = [...included];
+          this.applyTickTickSettings(connection);
+        }
+      } else source.selected = selected;
+    }
+    if (typeof readOnly === 'boolean') {
+      if (source.provider === 'ticktick') source.localReadOnly = readOnly;
+      source.readOnly = !source.writable || readOnly;
+    }
+    this.profile.save();
+  }
+
+  configureTickTick(input) {
+    const connection = this.tickTickConnection('ticktick', input.connectionId);
+    const sources = this.connectionSources(connection.id);
+    connection.ticktick = configureTickTickSettings(connection.ticktick, input, sources.map(source => source.id), this.data.unavailableSourceSettings);
+    this.applyTickTickSettings(connection);
+    this.profile.save();
+  }
+
+  setTickTickCalendarVisible({ connectionId, calendarId, visible }) {
+    const connection = this.tickTickConnection('ticktick', connectionId);
+    if (typeof visible !== 'boolean' || !this.tickTickCalendars.get(connectionId).some(calendar => calendar.id === calendarId)) {
+      throw new Error('Choose an available calendar from this TickTick account.');
+    }
+    const hidden = new Set(connection.ticktick.hiddenCalendarIds);
+    if (visible) hidden.delete(calendarId);
+    else hidden.add(calendarId);
+    connection.ticktick.hiddenCalendarIds = [...hidden];
+    this.applyTickTickSettings(connection);
     this.profile.save();
   }
 
@@ -221,44 +323,92 @@ export class CalendarService {
     return this.data.cache[sourceId] ??= { items: [], checks: [] };
   }
 
-  async state({ start, end }) {
-    validateRange(start, end);
-    const health = [];
-    await Promise.all(this.data.connections.map(async connection => {
-      let client;
+  preferenceHealth(source, connection, range) {
+    const last = range.checks.get(source.id);
+    if (last) {
+      if (range.visible.has(source.id) || Date.now() - last.at < preferenceCacheAge) return last.health;
+      return;
+    }
+    const covered = this.data.cache[source.id]?.checks.find(check => check.zone === range.zone && check.start <= range.start &&
+      check.end >= range.end && Date.now() - Date.parse(check.checkedAt) < preferenceCacheAge);
+    if (covered) {
+      const health = currentHealth(source, connection, covered.checkedAt);
+      range.checks.set(source.id, { health, at: Date.parse(covered.checkedAt) });
+      return health;
+    }
+  }
+
+  async refreshConnection(connection, range, preferencesOnly) {
+    let client;
+    const connectionError = error => range.discoveryErrors.set(connection.id,
+      { connectionId: connection.id, state: 'error', message: error.message, checkedAt: null });
+    if (!preferencesOnly) {
       try {
         client = this.client(connection);
         this.updateSources(connection, await client.sources());
-      } catch (error) {
-        health.push({ connectionId: connection.id, state: 'error', message: error.message, checkedAt: null });
+        range.discoveryErrors.delete(connection.id);
+      } catch (error) { connectionError(error); }
+    }
+    const sources = this.connectionSources(connection.id).filter(source => source.selected);
+    const checks = sources.map(source => preferencesOnly ? this.preferenceHealth(source, connection, range) : undefined);
+    if (preferencesOnly && checks.some(check => !check)) {
+      try { client = this.client(connection); }
+      catch (error) { connectionError(error); }
+    }
+    const remaining = sources.entries();
+    const worker = async () => {
+      for (const [index, source] of remaining) {
+        if (checks[index]) continue;
+        const health = await this.refreshSource(source, connection, client, range);
+        checks[index] = health;
+        range.checks.set(source.id, { health, at: Date.now() });
       }
-      for (const source of this.data.sources.filter(s => s.connectionId === connection.id && s.selected)) {
-        const cache = this.cache(source.id);
-        try {
-          if (!client) throw new Error('Reconnect this account to refresh.');
-          const items = await client.items(source.remote, start, end);
-          const ids = new Set(items.map(item => item.id));
-          cache.items = cache.items.filter(item => !ids.has(item.id) && !overlaps(item, start, end)).concat(items);
-          const checkedAt = new Date().toISOString();
-          cache.checks = [{ start, end, checkedAt }, ...cache.checks.filter(range => range.start !== start || range.end !== end)].slice(0, 30);
-          health.push({ connectionId: connection.id, sourceId: source.id, state: 'current', checkedAt,
-            message: source.provider === 'mac' || connection.route === 'mac' ? 'Checked the Mac calendar database.' : 'Checked the source.' });
-        } catch (error) {
-          const covered = cache.checks.find(range => range.start <= start && range.end >= end);
-          health.push({ connectionId: connection.id, sourceId: source.id, state: covered ? 'stale' : 'error',
-            checkedAt: covered?.checkedAt ?? null, message: error.message });
-        }
-      }
-    }));
+    };
+    const limit = connection.provider === 'ticktick' ? 4 : 1;
+    await Promise.all(Array.from({ length: Math.min(limit, sources.length) }, worker));
+    const error = range.discoveryErrors.get(connection.id);
+    return error ? [error, ...checks] : checks;
+  }
+
+  async refreshSource(source, connection, client, { start, end, zone }) {
+    const cache = this.cache(source.id);
+    try {
+      if (!client) throw new Error('Reconnect this account to refresh.');
+      const items = await client.items(source.remote, start, end);
+      const ids = new Set(items.map(item => item.id));
+      cache.items = cache.items.filter(item => !ids.has(item.id) && !overlaps(item, start, end)).concat(items);
+      const checkedAt = new Date().toISOString();
+      cache.checks = [{ start, end, zone, checkedAt }, ...cache.checks.filter(range => range.start !== start || range.end !== end)].slice(0, 30);
+      return currentHealth(source, connection, checkedAt);
+    } catch (error) {
+      const covered = cache.checks.find(range => range.start <= start && range.end >= end);
+      return { connectionId: connection.id, sourceId: source.id, state: covered ? 'stale' : 'error',
+        checkedAt: covered?.checkedAt ?? null, message: error.message };
+    }
+  }
+
+  async state({ start, end, preferencesOnly = false }) {
+    validateRange(start, end);
+    const zone = currentTimeZone();
+    if (this.lastRange?.start !== start || this.lastRange.end !== end || this.lastRange.zone !== zone) {
+      this.lastRange = { start, end, zone, checks: new Map(), discoveryErrors: new Map(), visible: new Set() };
+    }
+    const range = this.lastRange;
+    const health = (await Promise.all(this.data.connections.map(connection =>
+      this.refreshConnection(connection, range, preferencesOnly === true)))).flat();
     this.profile.save();
-    const sources = this.data.sources.map(({ remote, remoteId, ...source }) => source);
+    const sources = this.data.sources.map(({ remote, remoteId, localReadOnly, ...source }) =>
+      source.provider === 'ticktick' ? { ...source, ...listMetadata(remote) } : source);
+    range.visible = new Set(sources.filter(source => source.selected).map(source => source.id));
     const items = sources.filter(s => s.selected).flatMap(source => this.cache(source.id).items
       .filter(item => !item.completed && overlaps(item, start, end) && !this.data.hidden.some(h => matches(h, source.id, item.id)))
       .map(item => publicItem(item, source)));
     return {
       connectionOptions: { ...this.providers.connectionOptions,
         googleBrowser: Boolean(this.providers.connectionOptions?.googleBrowser || this.data.connections.some(c => c.provider === 'google' && c.route !== 'mac')) },
-      connections: this.data.connections.map(({ id, provider, name, route }) => ({ id, provider, name, route })),
+      connections: this.data.connections.map(({ id, provider, name, route, ticktick }) =>
+        ({ id, provider, name, route, ...(ticktick && { ticktick: publicTickTickSettings(ticktick) }) })),
+      ticktickCalendars: this.data.connections.flatMap(connection => this.tickTickCalendars.get(connection.id) ?? []),
       sources, items, hidden: this.data.hidden, health, uncertain: this.data.journal
     };
   }

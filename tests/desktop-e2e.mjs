@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { appPath, createItem, DesktopDriver, refresh, until } from './desktop-driver.mjs';
 import { startProviderServer } from './provider-server.mjs';
 import { verifyTickTickJourneys } from './ticktick-journeys.mjs';
+import { expandFolder, verifyTickTickCalendars } from './ticktick-calendars-e2e.mjs';
 import { verifyGoogleJourneys } from './google-journeys.mjs';
 import { verifyMacOnboarding } from './mac-onboarding-e2e.mjs';
 
@@ -42,7 +43,8 @@ async function onboard(page) {
   await dialog.getByRole('button', { name: 'Continue with TickTick', exact: true }).click();
   const tickConsent = await tickOAuth;
   await tickConsent.getByRole('button', { name: 'Authorize test tasks' }).click();
-  await dialog.getByRole('checkbox', { name: 'Planning tasks', exact: true }).waitFor();
+  await dialog.getByRole('button', { name: 'Edit lists', exact: true }).waitFor();
+  assert.equal(await dialog.getByRole('checkbox', { name: 'Planning tasks', exact: true }).count(), 0);
   await dialog.getByRole('button', { name: 'Connect Google', exact: true }).click();
   assert.equal(await dialog.getByLabel('Client ID', { exact: true }).count(), 0);
   const oauth = driver.application.waitForEvent('window');
@@ -52,22 +54,28 @@ async function onboard(page) {
   const selected = dialog.getByRole('checkbox', { name: 'Studio', exact: true });
   await selected.waitFor();
   assert.equal(await selected.isChecked(), false);
-  for (const name of ['Planning tasks', 'Studio', 'BMW Work', 'Read-only BMW Work']) {
+  for (const name of ['Studio', 'BMW Work', 'Read-only BMW Work']) {
     const control = dialog.getByRole('checkbox', { name, exact: true });
     await control.check();
     await until(async () => (await control.isChecked()) && await dialog.getByRole('button', { name: 'Done', exact: true }).isEnabled(), 'Source settings did not save.');
   }
   assert.equal(await dialog.getByRole('checkbox', { name: 'TickTick copies', exact: true }).isChecked(), false);
-  const planning = dialog.getByRole('checkbox', { name: 'Planning tasks', exact: true });
-  const planningId = await planning.getAttribute('data-source-id');
+  async function selectedPlanningId() {
+    await dialog.getByRole('button', { name: 'Edit lists', exact: true }).click();
+    await expandFolder(dialog, 'Work');
+    const planning = dialog.getByRole('checkbox', { name: 'Planning tasks', exact: true });
+    assert.equal(await planning.isChecked(), true);
+    const id = await planning.getAttribute('data-source-id');
+    assert.ok(id);
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    return id;
+  }
+  const planningId = await selectedPlanningId();
   await dialog.getByRole('button', { name: 'Reconnect', exact: true }).click();
   const reauth = driver.application.waitForEvent('window');
   await dialog.getByRole('button', { name: 'Continue with TickTick', exact: true }).click();
   await (await reauth).getByRole('button', { name: 'Authorize test tasks' }).click();
-  await planning.waitFor();
-  assert.equal(await planning.count(), 1);
-  assert.equal(await planning.isChecked(), true);
-  assert.equal(await planning.getAttribute('data-source-id'), planningId);
+  assert.equal(await selectedPlanningId(), planningId);
   await dialog.getByRole('button', { name: 'Done', exact: true }).click();
   await refresh(page);
   await page.getByRole('button', { name: 'Review the launch plan', exact: true }).waitFor();
@@ -135,6 +143,9 @@ try {
   }
   const helpers = { provider, refresh, createItem, restart: () => driver.restart(), dragTo: options => driver.dragTo(options),
     screenshot: (page, name) => driver.screenshot(page, name) };
+  console.log('TickTick account, list selection, folders and custom calendars');
+  page = await verifyTickTickCalendars({ ...helpers, page });
+  report.passed.push('One TickTick account, native folder and list order, remembered filters, folder split and named calendars writing to the original lists');
   console.log('TickTick planning and uncertain recovery');
   page = await verifyTickTickJourneys({ ...helpers, page });
   report.passed.push('Original TickTick schedule, resize, cross-date move and completion', 'TickTick create uncertainty and restart');

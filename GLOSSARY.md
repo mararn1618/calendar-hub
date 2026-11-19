@@ -6,6 +6,14 @@
 
 A to-do kept in TickTick. It can have a day, a time slot and a completion state. Checking it off in Calendar Central means completing the original task in TickTick.
 
+**TickTick calendar**
+
+A local view of task lists from one TickTick account. The account starts as one calendar. It can also be divided by TickTick folder or into calendars the user names.
+
+**TickTick list and folder**
+
+A list holds the original tasks. A folder in TickTick groups lists and has its own place among the account's loose lists. These positions determine the order of the list picker.
+
 **Calendar event**
 
 An appointment on a Google or Exchange calendar. It can occupy a time slot or span whole days.

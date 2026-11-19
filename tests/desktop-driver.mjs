@@ -82,6 +82,7 @@ export class DesktopDriver {
     const clock = col.locator('.hour-line[data-time="' + String(hour).padStart(2, '0') + ':00"]').first();
     const nextClock = col.locator('.hour-line[data-time="' + String((hour + 1) % 24).padStart(2, '0') + ':00"]').first();
     const isAllDay = await block.evaluate(node => node.classList.contains('all-day-item'));
+    if (isAllDay) await block.scrollIntoViewIfNeeded();
     const measure = async () => {
       const [origin, target, after, area, header] = await Promise.all([
         block.boundingBox(), clock.boundingBox(), nextClock.boundingBox(), viewport.boundingBox(), viewport.locator('.timeline-header').boundingBox()

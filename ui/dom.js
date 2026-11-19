@@ -57,32 +57,52 @@ export function sourceColor(source) {
   return source?.color && CSS.supports('color', source.color) ? source.color : defaults[source?.provider] || '#567e91';
 }
 
-export function sourceCheckbox(source, change, status) {
+function coloredCheckbox(name, color, checked, change) {
   const row = element('label', 'source-toggle');
-  row.style.setProperty('--source-color', sourceColor(source));
+  row.style.setProperty('--source-color', color);
   const check = element('input');
   check.type = 'checkbox';
-  check.checked = source.selected;
-  check.dataset.sourceId = source.id;
-  check.setAttribute('aria-label', source.name);
+  check.checked = checked;
+  check.setAttribute('aria-label', name);
   check.addEventListener('change', () => {
     check.disabled = true;
     change(check.checked);
   });
-  const label = element('span', 'source-name', source.name);
-  label.title = source.name;
+  const label = element('span', 'source-name', name);
+  label.title = name;
   row.append(check, label);
-  if (source.readOnly || !source.writable) {
-    const lock = icon('lock');
-    lock.title = 'Read-only';
-    row.append(lock);
-  }
+  return { row, check };
+}
+
+function showHealth(row, status) {
   if (status && status.state !== 'current') {
     const warning = element('span', 'health-warning', '!');
     warning.setAttribute('aria-label', status.state);
     warning.title = status.message || 'Source unavailable';
     row.append(warning);
   }
+}
+
+export function sourceCheckbox(source, change, status) {
+  const { row, check } = coloredCheckbox(source.name, sourceColor(source), source.selected, change);
+  check.dataset.sourceId = source.id;
+  if (source.readOnly || !source.writable) {
+    const lock = icon('lock');
+    lock.title = 'Read-only';
+    row.append(lock);
+  }
+  showHealth(row, status);
+  return row;
+}
+
+export function tickTickCalendarCheckbox(calendar, change, health) {
+  const { row, check } = coloredCheckbox(calendar.name, sourceColor({ provider: 'ticktick', color: calendar.color }), calendar.visible, change);
+  check.dataset.calendarId = calendar.id;
+  check.dataset.connectionId = calendar.connectionId;
+  const count = calendar.sourceIds.length;
+  check.setAttribute('aria-description', count + (count === 1 ? ' TickTick list' : ' TickTick lists'));
+  showHealth(row, health.find(entry => entry.connectionId === calendar.connectionId && entry.state !== 'current' &&
+    (!entry.sourceId || calendar.sourceIds.includes(entry.sourceId))));
   return row;
 }
 

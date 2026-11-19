@@ -1,9 +1,9 @@
 import { addDays, dateRangeLabel, formatDate, localDate, localTime, monday, monthStart, weekNumber } from './dates.js';
-import { $, button, element, errorText, healthFor, icon, iconButton, providers, sourceCheckbox } from './dom.js';
+import { $, button, element, errorText, healthFor, icon, iconButton, providers, sourceCheckbox, tickTickCalendarCheckbox } from './dom.js';
 import { createPanels } from './panels.js';
 import { createPlanner } from './planner.js';
 
-const emptyState = { connections: [], sources: [], items: [], hidden: [], health: [], uncertain: [] };
+const emptyState = { connections: [], sources: [], ticktickCalendars: [], items: [], hidden: [], health: [], uncertain: [] };
 let data = emptyState;
 let selectedDate = localDate();
 let month = monthStart(selectedDate);
@@ -11,7 +11,7 @@ let today = selectedDate;
 let zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 let view = ['day', 'week', 'next'].includes(localStorage.getItem('view')) ? localStorage.getItem('view') : 'day';
 let count = Math.max(1, Math.min(31, Number(localStorage.getItem('next-days')) || 3));
-let loaded = false;
+let loadedRange = '';
 let loadError = '';
 let notice;
 let sequence = 0;
@@ -87,6 +87,26 @@ function renderSources() {
     const group = element('div', 'sidebar-group');
     const heading = element('h3', '', connection.name || providers[connection.provider]);
     heading.title = heading.textContent;
+    if (connection.provider === 'ticktick') {
+      const calendars = data.ticktickCalendars.filter(calendar => calendar.connectionId === connection.id);
+      const configure = iconButton('Edit TickTick lists', 'settings', () => panels.tickTickLists(connection.id));
+      configure.id = 'edit-ticktick-' + connection.id;
+      configure.dataset.connectionId = connection.id;
+      configure.title = 'Edit lists for ' + heading.textContent;
+      const row = element('div', 'sidebar-calendar-heading');
+      group.append(row);
+      const toggles = calendars.map(calendar => tickTickCalendarCheckbox(calendar, async visible => {
+        try { await mutate('setTickTickCalendarVisible', { connectionId: connection.id, calendarId: calendar.id, visible }); }
+        catch (error) { report(errorText(error)); renderSources(); }
+      }, data.health));
+      if (connection.ticktick.mode === 'account' && toggles.length === 1) row.append(toggles[0], configure);
+      else {
+        row.append(heading, configure);
+        group.append(...toggles);
+      }
+      groups.push(group);
+      continue;
+    }
     group.append(heading);
     for (const source of data.sources.filter(source => source.connectionId === connection.id)) {
       group.append(sourceCheckbox(source, async selected => {
@@ -116,7 +136,7 @@ function renderStatus() {
   const failures = data.health.filter(entry => entry.state !== 'current');
   const latest = data.health.map(h => h.checkedAt).filter(Boolean).sort().at(-1);
   const syncing = Boolean(pending);
-  const status = loadError || failures.length ? 'Needs attention' : syncing ? 'Refreshing…' : !loaded ? 'Opening calendar' : !data.connections.length ? 'No connections' : latest ? 'Updated ' + localTime(latest) : 'Connected';
+  const status = loadError || failures.length ? 'Needs attention' : syncing ? 'Refreshing…' : !loadedRange ? 'Opening calendar' : !data.connections.length ? 'No connections' : latest ? 'Updated ' + localTime(latest) : 'Connected';
   $('#sync-status').textContent = status;
   $('#status-dot').className = 'status-dot ' + (loadError || failures.length ? 'warning' : data.connections.length ? 'online' : '');
   $('#refresh').classList.toggle('refreshing', syncing);
@@ -143,13 +163,19 @@ function renderStatus() {
 
 function renderCalendar() {
   const period = range();
-  const chosen = data.sources.filter(source => source.selected);
+  const calendars = new Map(data.ticktickCalendars.map(calendar => [calendar.id, calendar]));
+  const chosen = data.sources.filter(source => source.selected).map(source => {
+    const calendar = calendars.get(source.calendarId);
+    if (!calendar) return source;
+    const context = [...new Set([calendar.name, source.folder?.name, source.name].filter(Boolean))].join(' · ');
+    return { ...source, color: calendar.color, context };
+  });
   const selected = new Set(chosen.map(source => source.id));
   const hidden = new Set(data.hidden.map(item => JSON.stringify([item.sourceId, item.id])));
   const entries = data.items.filter(item => selected.has(item.sourceId) && !hidden.has(JSON.stringify([item.sourceId, item.id])));
   planner.render({ days: period.days, selectedDate, entries, calendars: chosen });
   const empty = $('#empty');
-  empty.hidden = !loaded || Boolean(chosen.length);
+  empty.hidden = !loadedRange || Boolean(chosen.length);
   if (!empty.hidden) {
     const connected = Boolean(data.connections.length);
     const mark = element('div', 'empty-calendar');
@@ -159,7 +185,7 @@ function renderCalendar() {
     const help = element('p', '', connected ? 'Select the calendars and task lists you want to see here.' : 'Plan with your TickTick tasks, Google events and Mac calendars in one place.');
     empty.replaceChildren(mark, title, help, button(connected ? 'Choose calendars' : 'Connect calendars', panels.settings, 'primary'));
   }
-  const n = chosen.length;
+  const n = chosen.filter(source => source.provider !== 'ticktick').length + data.ticktickCalendars.filter(calendar => calendar.visible).length;
   const shown = entries.filter(item => item.allDay ? item.start < period.end && item.end > period.start :
     localDate(item.start) < period.end && localDate(Math.max(Date.parse(item.start), Date.parse(item.end) - 1)) >= period.start);
   $('#range-summary').textContent = `${n} ${n === 1 ? 'calendar' : 'calendars'} · ${shown.length} ${shown.length === 1 ? 'item' : 'items'}`;
@@ -173,24 +199,23 @@ function draw() {
   renderStatus();
 }
 
-function refresh(force = false) {
+function refresh(force = false, preferencesOnly = false) {
   clearTimeout(refreshTimer);
   const { start, end } = range();
   const key = rangeKey({ start, end });
-  if (!force && pending?.key === key && pending.serial === sequence) return pending.promise;
+  const reuseChecks = preferencesOnly && loadedRange === key && !loadError;
+  if (!force && pending?.key === key && pending.serial === sequence && (!pending.reuseChecks || reuseChecks)) return pending.promise;
   const serial = ++sequence;
-  const request = {};
+  const request = { key, serial, reuseChecks };
   pending = request;
-  request.serial = serial;
-  request.key = key;
   renderStatus();
   request.promise = (async () => {
     try {
       if (!window.calendar?.state) throw new Error('Open the Calendar Central Mac app to load your calendars.');
-      const result = await window.calendar.state({ start, end });
+      const result = await window.calendar.state({ start, end, ...(reuseChecks && { preferencesOnly: true }) });
       if (serial !== sequence || key !== rangeKey(range())) return;
       data = { ...emptyState, ...result };
-      loaded = true;
+      loadedRange = key;
       loadError = '';
       rangeCache.delete(key);
       rangeCache.set(key, data.items);
@@ -214,11 +239,25 @@ async function mutate(method, payload) {
     if (!window.calendar?.[method]) throw new Error('Open the Calendar Central Mac app to change a calendar.');
     await window.calendar[method](payload);
   } catch (error) { failure = error; }
+  const preferencesOnly = !failure && (method === 'configureTickTick' || method === 'setTickTickCalendarVisible');
+  while (preferencesOnly && pending && !pending.reuseChecks && pending.serial === sequence) await pending.promise;
   rangeCache.clear();
-  await refresh(true);
+  await refresh(true, preferencesOnly);
   if (failure) throw failure;
   notice = undefined;
   renderStatus();
+}
+function showRange(previous) {
+  const key = rangeKey(range());
+  if (key !== previous) {
+    sequence++;
+    data = { ...data, items: rangeCache.get(key) || [] };
+  }
+  draw();
+  if (key !== previous) {
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => refresh(), 65);
+  }
 }
 function goTo(date, mode = view) {
   panels.closeMenu(false);
@@ -227,16 +266,7 @@ function goTo(date, mode = view) {
   localStorage.setItem('view', view);
   selectedDate = date;
   month = monthStart(date);
-  const key = rangeKey(range());
-  if (key !== previous) {
-    sequence++;
-    if (rangeCache.has(key)) data = { ...data, items: rangeCache.get(key) };
-  }
-  draw();
-  if (key !== previous) {
-    clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(() => refresh(), 65);
-  }
+  showRange(previous);
 }
 function navigate(direction) { goTo(addDays(selectedDate, direction * range().days.length)); }
 function goToday() { goTo(localDate()); planner.scrollToWorkday(); }
@@ -258,11 +288,10 @@ function changeCount(commit) {
     return;
   }
   if (value === count) return;
+  const previous = rangeKey(range());
   count = value;
   localStorage.setItem('next-days', String(count));
-  draw();
-  clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(() => refresh(), 65);
+  showRange(previous);
 }
 $('#day-count').addEventListener('input', () => changeCount(false));
 $('#day-count').addEventListener('change', () => changeCount(true));

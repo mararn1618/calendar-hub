@@ -161,6 +161,7 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on('second-instance', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } });
   app.whenReady().then(async () => {
+    if (!app.isPackaged) app.dock?.setIcon(path.join(directory, '../assets/calendar-central.png'));
     registry.notificationCenter = testOrigin ? fixtureNotificationCenter(testOrigin) : createMacNotificationCenter();
     const service = new CalendarService(new Profile(app.getPath('userData'), safeStorage), registry);
     for (const action of ['state', 'connect', 'macGoogleCalendars', 'openInternetAccounts', 'disconnect', 'setSource',

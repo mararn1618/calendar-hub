@@ -13,7 +13,19 @@ const staging = await mkdtemp(join(tmpdir(), 'calendar-central-package-'));
 try {
   const sources = join(staging, 'app');
   const native = join(staging, 'native');
+  const iconset = join(staging, 'calendar-central.iconset');
+  const icon = join(staging, 'calendar-central.icns');
+  const artwork = join(root, 'assets/calendar-central.png');
   await mkdir(sources);
+  await mkdir(iconset);
+  for (const size of [16, 32, 128, 256, 512]) {
+    for (const scale of [1, 2]) {
+      const pixels = String(size * scale);
+      const filename = `icon_${size}x${size}${scale === 2 ? '@2x' : ''}.png`;
+      execFileSync('sips', ['-z', pixels, pixels, artwork, '--out', join(iconset, filename)]);
+    }
+  }
+  execFileSync('iconutil', ['-c', 'icns', '-o', icon, iconset]);
   await buildMacHelpers(native);
   const { devDependencies, scripts, ...manifest } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   await writeFile(join(sources, 'package.json'), JSON.stringify(manifest));
@@ -25,7 +37,7 @@ try {
   const calendarPermission = 'Show your selected calendars and save edits to the Google calendars you choose.';
   const [output] = await packager({
     dir: sources, name: manifest.productName, platform: 'darwin', arch: process.arch, electronVersion: devDependencies.electron,
-    appBundleId: 'local.calendarcentral.desktop', appCategoryType: 'public.app-category.productivity',
+    icon, appBundleId: 'local.calendarcentral.desktop', appCategoryType: 'public.app-category.productivity',
     extendInfo: { NSCalendarsFullAccessUsageDescription: calendarPermission, NSCalendarsUsageDescription: calendarPermission },
     extraResource: [join(native, 'calendar-mac'), join(native, 'calendar-notifications.node')], asar: true, prune: false, overwrite: true,
     osxSign: { identity: '-', identityValidation: false, continueOnError: false,

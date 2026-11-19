@@ -162,7 +162,7 @@ async function checkAppReceipt(kind, id) {
 }
 async function showTestDays() {
   await button('Today').click();
-  await button('Next X Days').click();
+  await page.locator('[data-view="next"]').click();
   const count = page.getByRole('spinbutton', { name: 'Number of days' });
   if (Number(await count.inputValue()) !== 2) { await count.fill('2'); await count.press('Tab'); }
   await page.locator('.day-column[data-date="' + tomorrow + '"]').waitFor();
@@ -388,7 +388,7 @@ async function liveJourneys() {
   if (kinds.some(kind => report.providers[kind].status !== 'not_run')) {
     if (await settings().isVisible()) await settings().getByRole('button', { name: 'Done' }).click();
     if (!(await page.locator('#dialog[open]').isVisible())) {
-      await button('Next X Days').click();
+      await page.locator('[data-view="next"]').click();
       const count = page.getByRole('spinbutton', { name: 'Number of days' });
       await count.fill(initialView.count); await count.press('Tab');
       await page.locator('[data-view=' + JSON.stringify(initialView.view) + ']').click();

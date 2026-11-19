@@ -76,6 +76,11 @@ export async function verifyBrowserAccounts({ temporary, evidence }) {
     await driver.screenshot(page, 'browser-and-ticktick-accounts');
     await button(dialog, 'Done').click();
     await refresh(page);
+    for (const provider of providers) {
+      const section = region(page.locator('#source-list'), provider.name);
+      assert.equal(await section.getByRole('heading', { level: 3, name: provider.name, exact: true }).count(), 1);
+      for (const label of provider.labels) await section.getByRole('group', { name: label, exact: true }).waitFor();
+    }
     await page.locator('#new-item').click();
     const sources = new Map();
     for (const provider of providers) {

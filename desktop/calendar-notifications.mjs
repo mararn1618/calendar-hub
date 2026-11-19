@@ -58,17 +58,8 @@ export class CalendarNotifications {
     this.error = null;
   }
 
-  calendars() {
-    return [...this.service.tickTickCalendars.values()].flat().concat(this.data.sources.filter(source => source.provider !== 'ticktick')
-      .map(source => ({ id: source.id, name: source.name, connectionId: source.connectionId, sourceIds: [source.id] })));
-  }
-
   preferences() {
-    return Object.fromEntries(this.calendars().map(({ id }) => [id, this.data.notificationPreferences?.[id] ?? defaults]));
-  }
-
-  removePreferences(matches) {
-    for (const id of Object.keys(this.data.notificationPreferences ?? {})) if (matches(id)) delete this.data.notificationPreferences[id];
+    return Object.fromEntries(this.service.displayCalendars().map(({ id }) => [id, this.data.notificationPreferences?.[id] ?? defaults]));
   }
 
   observeTickTickItems(source, items) {
@@ -82,7 +73,7 @@ export class CalendarNotifications {
   }
 
   async set({ calendarId, enabled, leadMinutes }) {
-    if (!this.calendars().some(calendar => calendar.id === calendarId)) throw new Error('Choose an available calendar for reminders.');
+    if (!this.service.displayCalendars().some(calendar => calendar.id === calendarId)) throw new Error('Choose an available calendar for reminders.');
     if (enabled !== undefined && typeof enabled !== 'boolean') throw new Error('Choose whether to enable calendar reminders.');
     if (leadMinutes !== undefined && (!Number.isInteger(leadMinutes) || leadMinutes < 0 || leadMinutes > 10080)) {
       throw new Error('Enter a reminder time between 0 and 10080 whole minutes.');
@@ -156,7 +147,7 @@ export class CalendarNotifications {
         }
       }
       const sources = new Map(this.data.sources.map(source => [source.id, source]));
-      const routes = this.calendars().filter(calendar => this.data.notificationPreferences[calendar.id]?.enabled)
+      const routes = this.service.displayCalendars().filter(calendar => this.data.notificationPreferences[calendar.id]?.enabled)
         .flatMap(calendar => calendar.sourceIds.map(id => ({ source: sources.get(id), name: calendar.name, calendarId: calendar.id,
           leadMinutes: this.data.notificationPreferences[calendar.id].leadMinutes })));
       const live = new Set([...accounts.map(account => account.id), ...routes.map(route => route.source.id)]);

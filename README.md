@@ -1,12 +1,22 @@
 # Calendar Hub
 
+**[Download Calendar Hub 0.5.0 for Mac](https://github.com/mararn1618/calendar-hub/releases/download/v0.5.0/Calendar-Hub-0.5.0-arm64.dmg)** · [All releases and previews](https://github.com/mararn1618/calendar-hub/releases)
+
 A Mac calendar for TickTick tasks, Google appointments and read-only work meetings. Use Day, a Monday-to-Sunday Week or a rolling view of 1 to 31 days.
 
 ## Download for Mac
 
-The public preview runs on Apple Silicon Macs with macOS 14 or later. Open the release, download the `.dmg`, then drag **Calendar Hub** into **Applications**. [Download Calendar Hub](https://github.com/mararn1618/calendar-hub/releases)
+The public preview runs on Apple Silicon Macs with macOS 14 or later. Open the downloaded DMG, then drag **Calendar Hub** into **Applications**.
 
 The preview uses an ad hoc signature without Apple notarization. macOS may require your approval the first time you open it. [Apple’s guide to opening downloaded apps](https://support.apple.com/en-us/102445)
+
+## Calendar appearance
+
+Open **Manage calendars → Appearance** and choose **Light** or **Dark**. Light is the default. Calendar Hub remembers your choice on this Mac. Each provider has a sidebar heading, with its connected accounts and calendars underneath.
+
+Use the color control beside any calendar to change its sidebar marker and its entries on the timeline. Colors are local to Calendar Hub. TickTick calendars can have separate colors in the account, folder and custom layouts.
+
+The rolling view shows your chosen length, for example **Next 5 Days**. When you switch views, entries already loaded for those dates stay visible while the app checks for updates.
 
 ## Create an appointment
 

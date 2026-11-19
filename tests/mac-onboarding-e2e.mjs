@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { DesktopDriver, until } from './desktop-driver.mjs';
 import { drawTimedAppointment } from './drag-create-journeys.mjs';
 import { startMacCalendarFixture } from './fixtures/mac-calendar.mjs';
+import { chooseCalendarColor, colorControl, displayedColor } from './calendar-color-journeys.mjs';
 
 const work = { id: 'bmw-exchange', name: 'Meetings', accountId: 'exchange-a', accountName: 'Office', exchange: true, writable: true };
 const client = { ...work, id: 'client-exchange', accountId: 'exchange-b' };
@@ -99,12 +100,17 @@ export async function verifyMacOnboarding({ temporary, evidence }) {
     for (const name of ['BMW', 'Client Exchange']) assert.equal(await checkbox(account(name), 'Meetings').isChecked(), true);
     await driver.screenshot(page, 'native-multiple-accounts');
     await closeSettings();
+    await chooseCalendarColor(page, 'Meetings', '#ff6123', 'BMW');
+    await chooseCalendarColor(page, 'Appointments', '#5522cc', 'Team Google');
+    assert.notEqual(await displayedColor(colorControl(page, 'Appointments', 'Personal Google')), '#5522cc');
+    assert.notEqual(await displayedColor(colorControl(page, 'Meetings', 'Client Exchange')), '#ff6123');
     for (const [title, accountName] of [['BMW planning meeting', 'BMW'], ['Client planning meeting', 'Client Exchange']]) {
       const meeting = item(title);
       await meeting.waitFor();
       assert.equal(await meeting.getAttribute('data-editable'), 'false');
       await meeting.click();
       await dialog.getByText(accountName + ' · Meetings', { exact: true }).waitFor();
+      assert.equal(await displayedColor(dialog.locator('.calendar-context')), await displayedColor(meeting));
       await dialog.getByText('This item is read-only in Calendar Hub.', { exact: true }).waitFor();
       await button(dialog, 'Done').click();
     }
@@ -137,6 +143,8 @@ export async function verifyMacOnboarding({ temporary, evidence }) {
     dialog = page.locator('dialog[open]');
     await item(title).waitFor();
     assert.match(await item(title).getAttribute('aria-description'), /12:00.*Team Google/);
+    assert.equal(await displayedColor(item(title)), '#5522cc');
+    assert.equal(await displayedColor(item('BMW planning meeting')), '#ff6123');
     const nativeReminders = [
       { id: 'work-alert', title: 'Read-only meeting reminder', calendar: work, connection: 'BMW' },
       { id: 'personal-alert', title: 'Personal appointment reminder', calendar: google, connection: 'Personal Google' },

@@ -16,7 +16,8 @@ function savedSourceIds(data, connectionId) {
   const ids = [
     ...data.sources.filter(row => row.connectionId === connectionId).map(row => row.id),
     ...data.hidden.map(row => row.sourceId), ...data.journal.map(row => row.sourceId),
-    ...Object.keys(data.cache), ...Object.keys(data.notificationPreferences ?? {}), ...Object.keys(data.unavailableSourceSettings ?? {}),
+    ...Object.keys(data.cache), ...Object.keys(data.notificationPreferences ?? {}), ...Object.keys(data.calendarColorOverrides ?? {}),
+    ...Object.keys(data.unavailableSourceSettings ?? {}),
   ];
   const remoteIds = new Set();
   for (const id of ids) {
@@ -41,7 +42,7 @@ function moveSourceState(data, oldId, id, connectionId) {
     cache.items.push(...oldCache.items.filter(item => !seen.has(item.id)));
     cache.checks = [...cache.checks, ...oldCache.checks].sort((a, b) => b.checkedAt.localeCompare(a.checkedAt)).slice(0, 30);
   }
-  for (const table of [data.cache, data.notificationPreferences, data.unavailableSourceSettings]) {
+  for (const table of [data.cache, data.notificationPreferences, data.calendarColorOverrides, data.unavailableSourceSettings]) {
     if (table && Object.hasOwn(table, oldId)) {
       table[id] ??= table[oldId];
       delete table[oldId];

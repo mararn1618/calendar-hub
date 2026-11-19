@@ -1,8 +1,9 @@
-import { $, accountLabel, button, completable, deletable, editable, element, errorText, healthFor, icon, iconButton, providerMark, sourceContext, sourceCheckbox, tickTickCalendarCheckbox, writable } from './dom.js';
+import { $, accountLabel, button, completable, deletable, editable, element, errorText, healthFor, icon, iconButton, providerMark, sourceColor, sourceContext, sourceCheckbox, tickTickCalendarCheckbox, writable } from './dom.js';
 import { MINUTE, SLOT, addDays, differenceInDays, formatDate, localDate, localTime, possibleInstants, zoneOffset } from './dates.js';
 import { showMacAccountPicker, showRetainedCalendars } from './mac-account-picker.js';
 import { createTickTickEditor } from './ticktick-editor.js';
 import { listCount, tickTickSections } from './ticktick-lists.js';
+import { appearanceSettings } from './appearance.js';
 
 const dateFormat = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' };
 const asISO = value => new Date(value).toISOString();
@@ -84,6 +85,24 @@ export function createPanels(actions) {
   const hasPendingCreate = ({ sourceId, title }) => state().uncertain.some(row =>
     row.kind === 'create' && row.sourceId === sourceId && row.title === title);
 
+  function displayedCalendar(source) {
+    return source?.calendarId ? state().ticktickCalendars.find(calendar => calendar.id === source.calendarId) ?? source : source;
+  }
+
+  function markCalendar(node, calendar) {
+    if (calendar) {
+      node.classList.add('calendar-context');
+      node.style.setProperty('--source-color', sourceColor(calendar));
+    }
+    return node;
+  }
+
+  function calendarContext(source, tag = 'p') {
+    const calendar = displayedCalendar(source);
+    const label = sourceContext(source, state().connections, calendar?.name);
+    return markCalendar(element(tag, 'help', label), calendar);
+  }
+
   function close() {
     if (dialog.open) dialog.close();
     kind = undefined;
@@ -159,7 +178,7 @@ export function createPanels(actions) {
     const focused = kind === 'settings' && document.activeElement.id;
     panel('settings', 'Calendars', { wide: true });
     const { connections, sources, ticktickCalendars, health } = state();
-    body.append(element('h3', 'settings-subhead', 'Add an account'));
+    body.append(appearanceSettings(), element('h3', 'settings-subhead', 'Add an account'));
     const options = element('div', 'provider-options');
     for (const { id, name, available } of state().connectionOptions?.integrations || []) {
       if (!available) continue;
@@ -236,6 +255,52 @@ export function createPanels(actions) {
     footer.append(button('Hidden items', hiddenItems, 'text-button'), button('Done', close, 'primary'));
     body.scrollTop = scroll;
     if (focused) document.getElementById(focused)?.focus({ preventScroll: true });
+  }
+
+  function colorButton(calendar) {
+    const name = 'Change color for ' + calendar.name;
+    const control = button('', () => calendarColorPicker(calendar), 'icon-button calendar-color-button');
+    control.id = 'calendar-color-' + encodeURIComponent(calendar.id);
+    control.dataset.calendarId = calendar.id;
+    const color = sourceColor(calendar);
+    control.style.setProperty('--source-color', color);
+    control.title = name;
+    control.setAttribute('aria-label', name);
+    control.setAttribute('aria-description', sourceContext(calendar, state().connections) + ' · ' + color);
+    control.setAttribute('aria-haspopup', 'dialog');
+    return control;
+  }
+
+  function calendarColorPicker(calendar) {
+    panel('calendar-color', 'Calendar color');
+    dialog.classList.add('color-dialog');
+    const form = element('form', 'editor-form');
+    form.id = 'calendar-color-form';
+    const save = color => write('setCalendarColor', { calendarId: calendar.id, color }, close);
+    const picker = input('color', 'picked-color', sourceColor(calendar));
+    picker.setAttribute('aria-label', 'Pick a color');
+    const hex = input('text', 'hex-color', picker.value);
+    hex.required = true;
+    hex.pattern = '#?[0-9a-fA-F]{6}';
+    hex.maxLength = 7;
+    hex.spellcheck = false;
+    hex.title = 'Six hex digits, for example #3978C4';
+    const hexValue = () => '#' + hex.value.replace(/^#/, '');
+    hex.addEventListener('input', () => { if (hex.validity.valid) picker.value = hexValue(); });
+    picker.addEventListener('input', () => { hex.value = picker.value; });
+    const fields = element('div', 'calendar-color-fields');
+    fields.append(picker, field('Hex color', hex));
+    form.append(element('strong', 'settings-subhead', sourceContext(calendar, state().connections)), fields);
+    form.addEventListener('submit', event => { event.preventDefault(); if (form.reportValidity()) save(hexValue()); });
+    body.append(form);
+    const reset = button('Use default color', () => save(null), 'text-button');
+    reset.disabled = !calendar.hasCustomColor;
+    const submit = element('button', 'primary', 'Save');
+    submit.type = 'submit';
+    submit.setAttribute('form', form.id);
+    footer.append(reset, button('Cancel', close), submit);
+    hex.focus();
+    hex.select();
   }
 
   function notificationBell(calendar) {
@@ -578,8 +643,7 @@ export function createPanels(actions) {
       return;
     }
     if (!allowed) {
-      const location = sourceContext(source, state().connections);
-      body.append(element('strong', 'details-title', item.title), element('p', 'detail-dates', spanDescription(item)), element('p', 'help', location));
+      body.append(element('strong', 'details-title', item.title), element('p', 'detail-dates', spanDescription(item)), calendarContext(source));
       const reason = source.itemKind === 'task' && item.recurring ? 'Open this recurring task in ' + brandName(source.provider) + ' to change its schedule or completion.' :
         item.completed ? 'This task is complete.' : 'This item is read-only in Calendar Hub.';
       body.append(element('p', 'inline-note', reason));
@@ -638,6 +702,7 @@ export function createPanels(actions) {
       const group = destination.selectedOptions[0]?.parentElement;
       location.hidden = !group?.dataset.connectionId;
       location.textContent = location.hidden ? '' : group.label;
+      markCalendar(location, displayedCalendar(choices.find(choice => choice.id === destination.value)));
     }
     destination.addEventListener('change', showDestination);
     showDestination();
@@ -801,7 +866,7 @@ export function createPanels(actions) {
     const source = sourceOf(item);
     const brand = brandName(source.provider);
     panel('review', remove ? 'Delete from ' + brand + '?' : 'Review ' + brand + ' event change', { back });
-    body.append(element('strong', 'details-title', item.title), element('p', 'help', sourceContext(source, state().connections)));
+    body.append(element('strong', 'details-title', item.title), calendarContext(source));
     if (remove) {
       body.append(element('p', '', 'Delete this event from its ' + brand + ' calendar?'), element('p', 'detail-dates', spanDescription(item)));
     } else {
@@ -848,7 +913,7 @@ export function createPanels(actions) {
     for (const row of rows) {
       const entry = element('div', 'review-entry');
       const info = element('div');
-      info.append(element('strong', '', row.title), element('small', '', sourceContext(sourceOf(row), state().connections)));
+      info.append(element('strong', '', row.title), calendarContext(sourceOf(row), 'small'));
       entry.append(info, button('Restore', () => write('restore', { id: row.id, sourceId: row.sourceId }, () => { hiddenItems(); actions.toast('Item restored'); })));
       body.append(entry);
     }
@@ -861,7 +926,7 @@ export function createPanels(actions) {
     for (const row of rows) {
       const entry = element('div', 'review-entry');
       const info = element('div');
-      info.append(element('strong', '', row.title), element('small', '', sourceContext(sourceOf(row), state().connections)), element('p', 'help', row.message));
+      info.append(element('strong', '', row.title), calendarContext(sourceOf(row), 'small'), element('p', 'help', row.message));
       entry.append(info, button('Mark reviewed', () => {
         panel('acknowledge', 'Mark write as reviewed?', { back: uncertainItems });
         body.append(element('strong', 'details-title', row.title), element('p', '', 'Confirm that you checked the source for this item. Calendar Hub will clear this notice.'));
@@ -919,5 +984,5 @@ export function createPanels(actions) {
     else if (kind === 'hidden') hiddenItems();
     else if (kind === 'uncertain') uncertainItems();
   }
-  return { edit, settings, notificationBell, tickTickLists, hiddenItems, uncertainItems, menu: itemMenu, closeMenu, sync, reschedule: (item, change) => save(item, { ...itemKey(item), title: item.title, ...change }) };
+  return { edit, settings, colorButton, notificationBell, tickTickLists, hiddenItems, uncertainItems, menu: itemMenu, closeMenu, sync, reschedule: (item, change) => save(item, { ...itemKey(item), title: item.title, ...change }) };
 }

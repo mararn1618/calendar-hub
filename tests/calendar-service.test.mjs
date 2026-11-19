@@ -487,6 +487,151 @@ test('a failed refresh retains cached items and attributes freshness to the cove
   assert.equal(unseen.health[0].checkedAt, null);
 });
 
+test('saved overlapping dates are readable during a slow refresh after restarting', async () => {
+  const { service, profile, remote, registry, dates } = await tickTickAccount([tickList('work')]);
+  const week = { start: '2026-11-16', end: '2026-11-23' };
+  const items = [
+    { id: 'today', title: 'Today', allDay: true, ...dates },
+    { id: 'tomorrow', title: 'Tomorrow', allDay: true, start: dates.end, end: '2026-11-21' },
+  ];
+  remote.items = async () => items;
+  await service.run('state', week);
+  const restarted = new CalendarService({ ...profile, data: structuredClone(profile.data) }, registry);
+  const started = Promise.withResolvers(), release = Promise.withResolvers();
+  let reads = 0;
+  remote.items = async () => {
+    reads++;
+    started.resolve();
+    await release.promise;
+    return [];
+  };
+  const refreshing = restarted.run('state', dates);
+  await started.promise;
+  try {
+    const cached = await Promise.race([
+      restarted.run('state', { ...week, cachedOnly: true }),
+      new Promise(resolve => setImmediate(resolve)),
+    ]);
+    assert(cached, 'Reading saved items must not wait behind a provider refresh.');
+    assert.deepEqual(cached.items.map(item => item.id), ['today', 'tomorrow']);
+    assert.equal(cached.rangeCovered, true);
+    const nextDay = await restarted.run('state', { start: dates.end, end: '2026-11-21', cachedOnly: true });
+    assert.deepEqual(nextDay.items.map(item => item.id), ['tomorrow']);
+    const unseen = await restarted.run('state', { start: week.end, end: '2026-11-24', cachedOnly: true });
+    assert.equal(unseen.rangeCovered, false);
+    assert.deepEqual(unseen.items, []);
+    assert.equal(reads, 1);
+  } finally {
+    release.resolve();
+    await refreshing;
+  }
+  const updated = await restarted.run('state', { ...week, cachedOnly: true });
+  assert.deepEqual(updated.items.map(item => item.id), ['tomorrow'], 'The older week must reflect the deletion found by the day refresh.');
+  assert.equal(reads, 1);
+});
+
+test('cached views keep shared event IDs separate after hiding, deleting and selecting calendars', async () => {
+  const { service, profile, registry, remote, dates } = workspace();
+  registry.authorize = async ({ name }) => ({ name });
+  registry.identity = (_provider, secret) => secret.name;
+  await service.run('connect', { provider: 'google', name: 'Home' });
+  await service.run('connect', { provider: 'google', name: 'Team' });
+  const [home, team] = profile.data.sources;
+  for (const source of [home, team]) await service.run('setSource', { sourceId: source.id, selected: true });
+  const live = await service.run('state', dates);
+  const week = { start: '2026-11-16', end: '2026-11-23', cachedOnly: true };
+  const visible = async () => (await service.run('state', week)).items.map(item => item.sourceId);
+  remote.items = () => { throw new Error('Offline'); };
+  remote.remove = async () => {};
+  assert.deepEqual(await visible(), [home.id, team.id]);
+  await service.run('hide', live.items[0]);
+  assert.deepEqual(await visible(), [team.id]);
+  await service.run('remove', live.items[1]);
+  assert.deepEqual(await visible(), []);
+  await service.run('restore', live.items[0]);
+  assert.deepEqual(await visible(), [home.id]);
+  await service.run('setSource', { sourceId: home.id, selected: false });
+  assert.deepEqual(await visible(), []);
+});
+
+test('cached views show interrupted and uncertain writes while an active save stays out of recovery', async () => {
+  const { service, profile, registry, remote, dates } = workspace();
+  await service.run('connect', { provider: 'google' });
+  const [source] = profile.data.sources;
+  await service.run('setSource', { sourceId: source.id, selected: true });
+  const [item] = (await service.run('state', dates)).items;
+  const earlier = { id: 'earlier', sourceId: source.id, connectionId: source.connectionId, targetId: 'other',
+    kind: 'update', title: 'Other appointment', startedAt: '2026-11-19T08:00:00.000Z' };
+  profile.data.journal.push(earlier);
+  const started = Promise.withResolvers(), reply = Promise.withResolvers();
+  remote.update = async () => { started.resolve(); return reply.promise; };
+  const saving = assert.rejects(service.run('save', { ...item, title: 'Changed meeting' }), { code: 'UNCERTAIN' });
+  await started.promise;
+  const pending = profile.data.journal.find(entry => entry.targetId === item.id);
+  const cached = { ...dates, cachedOnly: true };
+  try {
+    assert(pending);
+    const during = await Promise.race([service.run('state', cached), new Promise(resolve => setImmediate(resolve))]);
+    assert.deepEqual(during?.uncertain, [earlier]);
+    const reopened = new CalendarService({ ...profile, data: structuredClone(profile.data) }, registry);
+    assert.deepEqual((await reopened.run('state', cached)).uncertain.map(entry => entry.id), [earlier.id, pending.id]);
+  } finally {
+    reply.reject(Object.assign(new Error('Connection lost during save.'), { code: 'UNCERTAIN' }));
+    await saving;
+  }
+  const failed = (await service.run('state', cached)).uncertain;
+  assert.deepEqual(failed.map(entry => entry.id), [earlier.id, pending.id]);
+  assert.equal(failed[1].message, 'Connection lost during save.');
+});
+
+test('cached coverage combines adjacent dates and keeps items from profiles without recorded time zones', async () => {
+  const { service, remote, dates, profile, registry } = await tickTickAccount([tickList('work')]);
+  await service.run('state', dates);
+  remote.items = async () => [];
+  await service.run('state', { start: dates.end, end: '2026-11-21' });
+  const twoDays = { start: dates.start, end: '2026-11-21', cachedOnly: true };
+  assert.equal((await service.run('state', twoDays)).rangeCovered, true);
+  assert.equal((await service.run('state', { ...twoDays, end: '2026-11-22' })).rangeCovered, false);
+
+  const old = structuredClone(profile.data);
+  for (const check of Object.values(old.cache)[0].checks) delete check.zone;
+  const restored = new CalendarService({ ...profile, data: old }, registry);
+  const saved = await restored.run('state', twoDays);
+  assert.equal(saved.rangeCovered, false);
+  assert.deepEqual(saved.items.map(item => item.id), ['task-work']);
+});
+
+test('offline rolling views report the oldest needed check across dates in the current time zone', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-16T08:00:00Z') });
+  const { service, remote, profile, sourceId } = await tickTickAccount([tickList('work')]);
+  const monday = { start: '2026-11-16', end: '2026-11-17' };
+  const tuesday = { start: monday.end, end: '2026-11-18' };
+  const both = { start: monday.start, end: tuesday.end };
+  remote.items = async () => [];
+  const firstDay = await service.run('state', monday);
+  t.mock.timers.tick(600_000);
+  await service.run('state', tuesday);
+  remote.items = async () => { throw new Error('Offline'); };
+  const stale = await service.run('state', both);
+  assert.equal(stale.rangeCovered, true);
+  assert.equal(stale.health[0].state, 'stale');
+  assert.equal(stale.health[0].checkedAt, firstDay.health[0].checkedAt);
+
+  const checks = profile.data.cache[sourceId('work')].checks;
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const extended = { start: monday.start, end: '2026-11-19' };
+  checks.push({ ...both, zone, checkedAt: '2026-11-10T08:00:00.000Z' });
+  assert.equal((await service.run('state', both)).health[0].checkedAt, firstDay.health[0].checkedAt);
+  const uncovered = await service.run('state', extended);
+  assert.equal(uncovered.health[0].state, 'error');
+  assert.equal(uncovered.health[0].checkedAt, null);
+  checks.push({ ...extended, zone: zone === 'UTC' ? 'Europe/Berlin' : 'UTC', checkedAt: new Date().toISOString() });
+  const wrongZone = await service.run('state', extended);
+  assert.equal(wrongZone.rangeCovered, false);
+  assert.equal(wrongZone.health[0].state, 'error');
+  assert.equal(wrongZone.health[0].checkedAt, null);
+});
+
 test('waiting for browser consent allows the current calendar to keep working', async () => {
   const { dates, service, registry } = workspace();
   const { promise, resolve } = Promise.withResolvers();

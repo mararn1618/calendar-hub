@@ -14,6 +14,7 @@ import { verifyMacOnboarding } from './mac-onboarding-e2e.mjs';
 import { verifyBrowserAccounts } from './multi-account-journeys.mjs';
 import { verifyNotificationJourneys } from './notification-journeys.mjs';
 import { verifyDragCreateJourneys } from './drag-create-journeys.mjs';
+import { verifyCalendarColors } from './calendar-color-journeys.mjs';
 
 const project = fileURLToPath(new URL('../', import.meta.url));
 const started = new Date().toISOString(), run = started.replaceAll(/[:.]/g, '-');
@@ -94,16 +95,41 @@ async function onboard(page) {
 }
 
 async function navigate(page) {
-  await page.locator('[data-view="week"]').click();
   const day = provider.day;
   const monday = shift(day, -((new Date(day + 'T12:00:00Z').getUTCDay() + 6) % 7));
-  await until(async () => await page.locator('.day-column').count() === 7, 'Week did not show seven days.');
-  assert.deepEqual(await page.locator('.day-column').evaluateAll(nodes => nodes.map(n => n.dataset.date)), Array.from({ length: 7 }, (_, i) => shift(monday, i)));
-  await driver.screenshot(page, 'full-week');
-  await page.locator('[data-view="next"]').click();
-  const count = page.getByLabel('Number of days');
-  await count.fill('14'); await count.press('Enter'); await count.press('Tab');
-  await until(async () => await page.locator('.day-column').count() === 14, 'Next X Days did not update.');
+  const release = Promise.withResolvers();
+  let providerWaiting = false;
+  provider.controls.beforeEventRead = () => { providerWaiting = true; return release.promise; };
+  const meeting = page.locator('[data-item-id="studioevent"]');
+  try {
+    await page.getByRole('button', { name: 'Next 3 Days', exact: true }).waitFor();
+    await page.locator('[data-view="week"]').click();
+    await until(() => providerWaiting, 'The provider did not start its week refresh.');
+    assert.deepEqual(await page.locator('.day-column').evaluateAll(nodes => nodes.map(n => n.dataset.date)), Array.from({ length: 7 }, (_, i) => shift(monday, i)));
+    assert.equal(await meeting.getAttribute('data-date'), day);
+    await driver.screenshot(page, 'full-week');
+    await page.getByRole('button', { name: 'Next 3 Days', exact: true }).click();
+    const count = page.getByLabel('Number of days');
+    await count.fill('1');
+    await page.getByRole('button', { name: 'Next 1 Day', exact: true }).waitFor();
+    await count.fill('14'); await count.press('Enter'); await count.press('Tab');
+    await page.getByRole('button', { name: 'Next 14 Days', exact: true }).waitFor();
+    await until(async () => await page.locator('.day-column').count() === 14, 'The rolling view did not show the selected days.');
+    assert.equal(await meeting.getAttribute('data-date'), day);
+    assert.equal(await page.locator('#timeline').getAttribute('aria-busy'), 'true');
+    await page.locator('#next').click();
+    await page.locator('.day-column[data-date="' + shift(day, 14) + '"]').waitFor();
+    assert.match(await page.locator('#range-summary').textContent(), /Checking for items…/);
+    assert.equal(await meeting.count(), 0);
+  } finally {
+    delete provider.controls.beforeEventRead;
+    release.resolve();
+  }
+  await until(async () => await page.locator('#timeline').getAttribute('aria-busy') === 'false', 'The rolling view did not finish refreshing.');
+  assert.match(await page.locator('#range-summary').textContent(), /\b0 items$/);
+  assert.equal(await page.locator('.day-column').count(), 14);
+  await page.locator('#today').click();
+  await meeting.waitFor();
   assert.equal(await page.locator('.day-column').first().getAttribute('data-date'), day);
   const view = page.locator('#timeline');
   await view.hover();
@@ -132,20 +158,55 @@ async function createBoth(page) {
   assert.equal(task.length, 1); assert.equal(task[0].projectId, 'planning'); assert.equal(task[0].isAllDay, true);
   assert.equal(event.length, 1); assert.equal(new Date(event[0].start.dateTime).getHours(), 12);
   page = await driver.restart();
+  await page.getByRole('button', { name: 'Next 14 Days', exact: true }).waitFor();
+  assert.equal(await page.locator('[data-view="day"]').getAttribute('aria-pressed'), 'true');
   await page.getByRole('button', { name: title, exact: true }).waitFor();
   await page.getByRole('button', { name: 'Studio booking', exact: true }).waitFor();
   assert.equal(await page.locator('[data-item-id="tickcopy"]').count(), 0);
   return page;
 }
 
+async function verifyAppearance(page) {
+  const manage = () => page.locator('#manage-calendars').click();
+  const option = name => page.getByRole('radiogroup', { name: 'Appearance' }).getByRole('radio', { name, exact: true });
+  const done = () => page.getByRole('dialog').getByRole('button', { name: 'Done', exact: true }).click();
+  const shades = { Light: 'rgb(255, 255, 255)', Dark: 'rgb(32, 33, 38)' };
+  for (const [name, color] of Object.entries(shades)) {
+    await manage();
+    if (name === 'Light') assert.equal(await option(name).isChecked(), true);
+    await option(name).check();
+    await until(async () => await driver.application.evaluate(({ nativeTheme }) => nativeTheme.themeSource) === name.toLowerCase(),
+      'The native window did not adopt the selected appearance.');
+    assert.equal(await page.locator('dialog').evaluate(node => getComputedStyle(node).backgroundColor), color);
+    await done();
+    assert.equal(await page.locator('.day-header').first().evaluate(node => getComputedStyle(node).backgroundColor), color);
+    assert.equal(await page.locator('.calendar-item[data-item-id="studioevent"]').count(), 1);
+    await driver.screenshot(page, 'appearance-' + name.toLowerCase());
+  }
+  page = await driver.restart();
+  await manage();
+  assert.equal(await option('Dark').isChecked(), true);
+  assert.equal(await driver.application.evaluate(({ nativeTheme }) => nativeTheme.themeSource), 'dark');
+  await driver.screenshot(page, 'appearance-settings');
+  await option('Light').check();
+  await done();
+  return page;
+}
+
 try {
   execFileSync('codesign', ['--verify', '--deep', '--strict', appPath]);
   let page = await driver.launch();
-  for (const [name, perform] of [['Connect and select sources', onboard], ['Day, Week, Next X Days and scrolling', navigate], ['Create at both sources and restart', createBoth]]) {
+  for (const [name, perform] of [['Connect and select sources', onboard], ['Day, Week and rolling views during refresh and scrolling', navigate], ['Create at both sources and restart', createBoth]]) {
     console.log(name); page = await perform(page) ?? page; report.passed.push(name);
   }
+  console.log('Calendar appearance and restart');
+  page = await verifyAppearance(page);
+  report.passed.push('Light and Dark apply from settings and the saved appearance survives restart');
   const helpers = { provider, refresh, createItem, restart: () => driver.restart(), dragTo: options => driver.dragTo(options),
     screenshot: (page, name) => driver.screenshot(page, name) };
+  console.log('Calendar colors and contrast');
+  page = await verifyCalendarColors({ ...helpers, page });
+  report.passed.push('Pick and reset local calendar colors with keyboard and swatch, including contrast, timed and all-day items, hiding and restart');
   console.log('Draw appointments on the calendar');
   page = await verifyDragCreateJourneys({ ...helpers, page });
   report.passed.push('Draw timed and all-day appointment drafts, cancel without writes and save once to the selected Google calendar');

@@ -13,7 +13,7 @@ async function waitForProvider(check, message) {
 }
 
 async function showThreeDays(page, through) {
-  await page.getByRole('button', { name: 'Next X Days', exact: true }).click()
+  await page.locator('[data-view="next"]').click()
   const count = page.getByRole('spinbutton', { name: 'Number of days' })
   if (await count.inputValue() !== '3') {
     await count.fill('3')

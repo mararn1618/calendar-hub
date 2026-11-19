@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { chooseCalendarColor, displayedColor } from './calendar-color-journeys.mjs';
 
 const checkbox = (area, name) => area.getByRole('checkbox', { name, exact: true });
 const button = (area, name) => area.getByRole('button', { name, exact: true });
@@ -26,11 +27,13 @@ export async function verifyTickTickCalendars({ page, provider, restart, refresh
   const item = id => page.locator('[data-item-id="' + id + '"]');
   const included = name => checkbox(picker(), name);
   const tickCalendar = name => checkbox(sidebar(), name);
+  const providerHeading = () => sidebar().getByRole('heading', { level: 3, name: 'TickTick', exact: true });
   const save = async () => {
     await button(picker(), 'Save').click();
     await picker().waitFor({ state: 'hidden' });
   };
 
+  await providerHeading().waitFor();
   assert.equal(await tickCalendar('TickTick').isChecked(), true);
   for (const name of ['Planning tasks', 'Errands', 'Inbox', 'Work']) assert.equal(await tickCalendar(name).count(), 0);
   for (const id of ['inbox-one', 'review', 'brief-task', 'errand-task']) await item(id).waitFor();
@@ -75,7 +78,11 @@ export async function verifyTickTickCalendars({ page, provider, restart, refresh
   await included('All active and future lists').check();
   await button(picker(), 'By folder').click();
   await save();
+  assert.equal(await providerHeading().count(), 1);
   for (const name of ['Work', 'Personal', 'Archive', 'Unfiled lists']) assert.equal(await tickCalendar(name).isChecked(), true);
+  await chooseCalendarColor(page, 'Work', '#4466cc');
+  assert.equal(await displayedColor(item('review')), '#4466cc');
+  assert.notEqual(await displayedColor(item('errand-task')), '#4466cc');
   await tickCalendar('Work').uncheck();
   await item('review').waitFor({ state: 'detached' });
   await item('errand-task').waitFor();
@@ -96,16 +103,20 @@ export async function verifyTickTickCalendars({ page, provider, restart, refresh
   await button(custom, 'Done').click();
   await save();
   await tickCalendar('Focus').waitFor();
+  await chooseCalendarColor(page, 'Focus', '#ab386a');
   await tickCalendar('Focus').uncheck();
   await item('review').waitFor({ state: 'detached' });
   await item('errand-task').waitFor({ state: 'detached' });
   await item('brief-task').waitFor();
   page = await restart();
+  await providerHeading().waitFor();
   assert.equal(await tickCalendar('Focus').isChecked(), false);
   assert.equal(await item('errand-task').count(), 0);
   await tickCalendar('Focus').check();
   await item('errand-task').waitFor();
   assert.equal(await item('review').count(), 1);
+  assert.equal(await displayedColor(item('review')), '#ab386a');
+  assert.equal(await displayedColor(item('errand-task')), '#ab386a');
   assert.equal(await item('review').getAttribute('data-source-id'), originalSource);
   await screenshot(page, 'ticktick-custom-calendars');
   await createItem(page, { title: 'Collect the printed proof', calendar: 'Errands', day: provider.day });

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, powerMonitor, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, powerMonitor, safeStorage, shell } from 'electron';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -75,10 +75,11 @@ let mainWindow;
 function openWindow() {
   mainWindow = new BrowserWindow({
     title: 'Calendar Hub', width: 1430, height: 940, minWidth: 840, minHeight: 560,
-    backgroundColor: '#f8fafb', webPreferences: {
+    show: false, backgroundColor: '#ffffff', webPreferences: {
       contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.join(directory, 'preload.cjs')
     }
   });
+  mainWindow.once('ready-to-show', () => mainWindow?.show());
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.on('will-navigate', (event, url) => { if (url !== pathToFileURL(index).href) event.preventDefault(); });
   mainWindow.on('closed', () => { mainWindow = null; });
@@ -98,12 +99,17 @@ if (!app.requestSingleInstanceLock()) {
     });
     registry.notificationCenter = testOrigin ? fixtureNotificationCenter(testOrigin) : createMacNotificationCenter();
     const service = new CalendarService(new Profile(profileDirectory, safeStorage), registry);
-    for (const action of ['state', 'connect', 'renameConnection', 'macAccountCalendars', 'macGoogleCalendars', 'openInternetAccounts', 'disconnect', 'setSource',
-      'configureTickTick', 'setTickTickCalendarVisible', 'setCalendarNotifications', 'save', 'complete', 'remove', 'hide', 'restore', 'acknowledge']) {
+    for (const action of ['state', 'setAppearance', 'connect', 'renameConnection', 'macAccountCalendars', 'macGoogleCalendars', 'openInternetAccounts', 'disconnect', 'setSource',
+      'configureTickTick', 'setTickTickCalendarVisible', 'setCalendarColor', 'setCalendarNotifications', 'save', 'complete', 'remove', 'hide', 'restore', 'acknowledge']) {
       ipcMain.handle('calendar:' + action, async (event, input) => {
         if (event.sender !== mainWindow?.webContents || event.senderFrame !== mainWindow.webContents.mainFrame
           || event.senderFrame.url !== pathToFileURL(index).href) throw new Error('Unknown calendar window.');
         try {
+          if (action === 'setAppearance') {
+            if (!['light', 'dark'].includes(input?.theme)) throw new Error('Choose Light or Dark.');
+            nativeTheme.themeSource = input.theme;
+            return { ok: true };
+          }
           if (action === 'openInternetAccounts') {
             if (!nativeAvailable) throw new Error('Open System Settings on your Mac.');
             if (!testOrigin) await shell.openExternal('x-apple.systempreferences:com.apple.Internet-Accounts-Settings.extension');

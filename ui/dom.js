@@ -98,7 +98,7 @@ export function deletable(item, source) {
 }
 
 export function sourceColor(source) {
-  const defaults = { ticktick: '#607abc', google: '#51897c', mac: '#a278ac' };
+  const defaults = { ticktick: '#607abc', google: '#647da3', mac: '#a278ac' };
   return source?.color && CSS.supports('color', source.color) ? source.color : defaults[source?.provider] || '#567e91';
 }
 

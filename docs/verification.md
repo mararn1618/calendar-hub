@@ -61,3 +61,9 @@ The Google account route through Apple Calendar also accepted a drawn 11:00 to 1
 On 19 November 2026, all 100 automated tests and 13 packaged checks passed on Apple Silicon. The browser journey signed in to two Google accounts and two TickTick accounts. Calendar names, list IDs and item IDs overlapped. An independent check of each provider confirmed that edits reached the selected account before and after restarting the app. Disconnecting one account left the other usable. [Browser account journey](../tests/multi-account-journeys.mjs)
 
 The Mac journey connected two Google accounts and two read-only Exchange accounts in a simulated Apple Calendar store. It checked destination selection, separate reminders, naming, offline calendar selections and disconnect. Upgrade tests checked that hidden items, preferences and unconfirmed writes followed their native account. The live BMW Exchange account was unavailable on this Mac. [Mac account journey](../tests/mac-onboarding-e2e.mjs) · [Upgrade tests](../tests/account-connections.test.mjs)
+
+## Calendar Hub 0.5.0
+
+All 107 automated tests and 15 packaged checks passed on Apple Silicon with macOS 27.0.1. Light and Dark applied to the native window, the calendar and its dialogs. The chosen appearance and calendar colors survived restart. The color checks covered Google, read-only Exchange and all three TickTick layouts, including black and white selections in both appearances. [Appearance and navigation checks](../tests/desktop-e2e.mjs) · [Color checks](../tests/calendar-color-journeys.mjs)
+
+With a provider response held open, appointments remained visible when switching to an overlapping range. An unseen, empty range showed its loading status before reporting zero items. Offline checks covered two adjacent saved days, and an active save stayed out of the recovery list while a new view read the cache. [Saved calendar checks](../tests/calendar-service.test.mjs)

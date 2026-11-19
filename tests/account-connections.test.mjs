@@ -34,6 +34,7 @@ function oldMacProfile(rows) {
   profile.data.hidden.push({ id: item.id, title: item.title, sourceId: oldKey });
   profile.data.journal.push({ id: 'pending-write', sourceId: oldKey, connectionId: id, kind: 'update' });
   profile.data.notificationPreferences = { [oldKey]: { enabled: false, leadMinutes: 22 } };
+  profile.data.calendarColorOverrides = { [oldKey]: '#7244aa' };
   const registry = createDesktopRegistry({ testOrigin: 'http://127.0.0.1:1', macCalendar: ({ accountId, googleCalendarIds }) => ({
     authorize: async () => rows,
     sources: async () => rows.filter(row => (!accountId || accountId === row.accountId) && googleCalendarIds.includes(row.id)),
@@ -60,6 +61,8 @@ test('an aggregate Google connection splits by native account ID without losing 
   assert.equal(view.uncertain[0].connectionId, work.id);
   assert.equal(view.notificationPreferences[moved].leadMinutes, 22);
   assert.equal(view.notificationPreferences[oldKey], undefined);
+  assert.equal(view.sources.find(source => source.id === moved).color, '#7244aa');
+  assert.equal(profile.data.calendarColorOverrides[oldKey], undefined);
   assert(!view.connections.some(row => row.legacyMac || row.secret));
   assert.deepEqual(profile.data.connections.map(row => row.secret.googleCalendarIds), [['home-cal'], ['work-cal']]);
   const restored = new CalendarService(profile, registry);

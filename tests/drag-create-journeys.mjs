@@ -118,7 +118,7 @@ export async function verifyDragCreateJourneys({ page, provider, refresh, screen
   await cancelDraft(await expectDraft(page, times));
   assert.deepEqual(writes(), [], 'The cancelled timed drafts sent a provider write.');
 
-  await page.getByRole('button', { name: 'Next X Days', exact: true }).click();
+  await page.locator('[data-view="next"]').click();
   const count = page.getByLabel('Number of days', { exact: true });
   const previousCount = await count.inputValue();
   await count.fill('4');

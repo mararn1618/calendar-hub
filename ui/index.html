@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
   <title>Calendar Hub</title>
   <link rel="stylesheet" href="./app.css">
   <script type="module" src="./app.js"></script>
@@ -45,7 +45,7 @@
       </header>
       <div class="view-bar">
         <div class="segmented" role="group" aria-label="Calendar view">
-          <button type="button" data-view="day">Day</button><button type="button" data-view="week">Week</button><button type="button" data-view="next">Next X Days</button>
+          <button type="button" data-view="day">Day</button><button type="button" data-view="week">Week</button><button type="button" data-view="next">Next 3 Days</button>
         </div>
         <label id="count-control" hidden>Show <input type="number" id="day-count" aria-label="Number of days" min="1" max="31" value="3"> days</label>
         <span id="zone-name" title="Mac time zone"></span>

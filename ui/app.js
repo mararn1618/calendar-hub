@@ -10,16 +10,17 @@ let month = monthStart(selectedDate);
 let today = selectedDate;
 let zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 let view = ['day', 'week', 'next'].includes(localStorage.getItem('view')) ? localStorage.getItem('view') : 'day';
-let count = Math.max(1, Math.min(31, Number(localStorage.getItem('next-days')) || 3));
+const savedCount = Number(localStorage.getItem('next-days'));
+let count = Number.isInteger(savedCount) && savedCount >= 1 && savedCount <= 31 ? savedCount : 3;
 let loadedRange = '';
+let displayedRange = '';
 let loadError = '';
 let notice;
 let sequence = 0;
 let pending;
 let refreshCount = 0;
-let refreshTimer;
 let toastTimer;
-const rangeCache = new Map();
+let scrollToWorkdayOnRender = false;
 const viewport = $('#timeline');
 viewport.dataset.refreshCount = '0';
 
@@ -28,7 +29,7 @@ function range() {
   const size = view === 'day' ? 1 : view === 'week' ? 7 : count;
   return { start, end: addDays(start, size), days: Array.from({ length: size }, (_, index) => addDays(start, index)) };
 }
-const rangeKey = period => period.start + '/' + period.end;
+const rangeKey = period => [zone, period.start, period.end].join('/');
 
 function toast(text) {
   clearTimeout(toastTimer);
@@ -70,12 +71,15 @@ function renderMini() {
   }
   $('#mini-days').replaceChildren(...days);
 }
+function renderDayCount() {
+  $('#day-count').value = String(count);
+  $('[data-view="next"]').textContent = `Next ${count} ${count === 1 ? 'Day' : 'Days'}`;
+}
 function renderHeading() {
   const { days, start } = range();
   $('#range-title').textContent = dateRangeLabel(start, days.at(-1));
   $('#range-context').textContent = `Week ${weekNumber(selectedDate)} · ${selectedDate.slice(0, 4)}`;
   $('#count-control').hidden = view !== 'next';
-  $('#day-count').value = String(count);
   for (const node of document.querySelectorAll('[data-view]')) node.setAttribute('aria-pressed', String(node.dataset.view === view));
   $('#zone-name').textContent = zone.replaceAll('_', ' ').replaceAll('/', ' / ');
   renderMini();
@@ -86,43 +90,54 @@ function renderSources() {
   const groups = [];
   function calendarRow(calendar, checkbox) {
     const row = element('div', 'sidebar-calendar-row');
-    row.append(checkbox, panels.notificationBell(calendar));
+    row.append(checkbox, panels.colorButton(calendar), panels.notificationBell(calendar));
     return row;
   }
-  for (const connection of data.connections) {
-    const group = element('div', 'sidebar-group');
-    const heading = element('h3', '', accountLabel(connection, data.connections));
-    heading.title = heading.textContent;
-    group.setAttribute('role', 'group');
-    group.setAttribute('aria-label', heading.textContent);
-    if (connection.provider === 'ticktick') {
+  for (const [provider, accounts] of Map.groupBy(data.connections, row => row.provider)) {
+    const section = element('section', 'sidebar-provider');
+    const header = element('div', 'sidebar-calendar-heading');
+    const title = element('h3', '', accounts[0].providerName || provider);
+    title.id = 'sidebar-provider-' + provider;
+    section.setAttribute('aria-labelledby', title.id);
+    header.append(title);
+    section.append(header);
+    for (const connection of accounts) {
+      const label = accountLabel(connection, data.connections);
+      const group = element('div', 'sidebar-group');
+      group.setAttribute('role', 'group');
+      group.setAttribute('aria-label', label);
       const calendars = data.ticktickCalendars.filter(calendar => calendar.connectionId === connection.id);
-      const configure = iconButton('Edit TickTick lists', 'settings', () => panels.tickTickLists(connection.id));
-      configure.id = 'edit-ticktick-' + connection.id;
-      configure.dataset.connectionId = connection.id;
-      configure.title = 'Edit lists for ' + heading.textContent;
-      const rows = calendars.map(calendar => calendarRow(calendar, tickTickCalendarCheckbox(calendar, async visible => {
-        try { await mutate('setTickTickCalendarVisible', { connectionId: connection.id, calendarId: calendar.id, visible }); }
-        catch (error) { report(errorText(error)); renderSources(); }
-      }, data.health)));
-      if (connection.ticktick.mode === 'account' && rows.length === 1 && calendars[0].name === heading.textContent) rows[0].append(configure);
-      else {
-        const header = element('div', 'sidebar-calendar-heading');
-        header.append(heading, configure);
-        group.append(header);
+      const singleAccountRow = connection.ticktick?.mode === 'account' && calendars.length === 1 && calendars[0].name === label;
+      const accountHeader = element('div', 'sidebar-calendar-heading');
+      if (!singleAccountRow && label !== title.textContent) {
+        const name = element('h4', '', label);
+        name.title = label;
+        accountHeader.append(name);
       }
-      group.append(...rows);
-      groups.push(group);
-      continue;
+      if (provider === 'ticktick') {
+        const configure = iconButton('Edit TickTick lists', 'settings', () => panels.tickTickLists(connection.id));
+        configure.id = 'edit-ticktick-' + connection.id;
+        configure.dataset.connectionId = connection.id;
+        configure.title = 'Edit lists for ' + label;
+        const rows = calendars.map(calendar => calendarRow(calendar, tickTickCalendarCheckbox(calendar, async visible => {
+          try { await mutate('setTickTickCalendarVisible', { connectionId: connection.id, calendarId: calendar.id, visible }); }
+          catch (error) { report(errorText(error)); renderSources(); }
+        }, data.health)));
+        const controls = accounts.length === 1 ? header : singleAccountRow ? rows[0] : accountHeader;
+        controls.append(configure);
+        group.append(...rows);
+      } else {
+        for (const source of data.sources.filter(source => source.connectionId === connection.id)) {
+          group.append(calendarRow(source, sourceCheckbox(source, async selected => {
+            try { await mutate('setSource', { sourceId: source.id, selected }); }
+            catch (error) { report(errorText(error)); renderSources(); }
+          }, healthFor(source, data.health))));
+        }
+      }
+      if (accountHeader.childElementCount) group.prepend(accountHeader);
+      section.append(group);
     }
-    group.append(heading);
-    for (const source of data.sources.filter(source => source.connectionId === connection.id)) {
-      group.append(calendarRow(source, sourceCheckbox(source, async selected => {
-        try { await mutate('setSource', { sourceId: source.id, selected }); }
-        catch (error) { report(errorText(error)); renderSources(); }
-      }, healthFor(source, data.health))));
-    }
-    groups.push(group);
+    groups.push(section);
   }
   if (!groups.length) {
     const add = button('', panels.settings, 'add-calendar');
@@ -185,8 +200,12 @@ function renderCalendar() {
   const hidden = new Set(data.hidden.map(item => JSON.stringify([item.sourceId, item.id])));
   const entries = data.items.filter(item => selected.has(item.sourceId) && !hidden.has(JSON.stringify([item.sourceId, item.id])));
   planner.render({ days: period.days, selectedDate, entries, calendars: chosen });
+  if (scrollToWorkdayOnRender) {
+    planner.scrollToWorkday();
+    scrollToWorkdayOnRender = false;
+  }
   const empty = $('#empty');
-  empty.hidden = !loadedRange || Boolean(chosen.length);
+  empty.hidden = data === emptyState || Boolean(chosen.length);
   if (!empty.hidden) {
     const connected = Boolean(data.connections.length);
     const mark = element('div', 'empty-calendar');
@@ -199,7 +218,11 @@ function renderCalendar() {
   const n = chosen.filter(source => source.provider !== 'ticktick').length + data.ticktickCalendars.filter(calendar => calendar.visible).length;
   const shown = entries.filter(item => item.allDay ? item.start < period.end && item.end > period.start :
     localDate(item.start) < period.end && localDate(Math.max(Date.parse(item.start), Date.parse(item.end) - 1)) >= period.start);
-  $('#range-summary').textContent = `${n} ${n === 1 ? 'calendar' : 'calendars'} · ${shown.length} ${shown.length === 1 ? 'item' : 'items'}`;
+  let itemCount = `${shown.length} ${shown.length === 1 ? 'item' : 'items'}`;
+  if (!shown.length && data.rangeCovered === false) {
+    itemCount = loadError || data.health.some(entry => entry.state !== 'current') ? 'Items unavailable' : 'Checking for items…';
+  }
+  $('#range-summary').textContent = `${n} ${n === 1 ? 'calendar' : 'calendars'} · ${itemCount}`;
   $('#hidden-items').textContent = data.hidden.length ? 'Hidden items (' + data.hidden.length + ')' : 'Hidden items';
   $('#hidden-items').setAttribute('aria-label', 'Hidden items');
 }
@@ -213,37 +236,51 @@ function draw() {
 function refreshCalendars() {
   return refresh({ force: true, refreshNotifications: true });
 }
-function refresh({ force = false, preferencesOnly = false, refreshNotifications = false } = {}) {
-  clearTimeout(refreshTimer);
+function showModel(result, key) {
+  const connections = result.connections.map(connection => ({
+    ...connection, providerName: result.connectionOptions.integrations.find(row => row.id === connection.provider)?.name || connection.provider
+  }));
+  data = { ...emptyState, ...result, sources: labelNativeSources(result.sources), connections };
+  displayedRange = key;
+  renderHeading();
+  renderSources();
+  renderCalendar();
+  panels.sync();
+}
+function refresh({ force = false, preferencesOnly = false, refreshNotifications = false, readCache = false, navigating = false } = {}) {
   const { start, end } = range();
   const key = rangeKey({ start, end });
   const reuseChecks = preferencesOnly && loadedRange === key && !loadError;
   if (!force && pending?.key === key && pending.serial === sequence && (!pending.reuseChecks || reuseChecks)) return pending.promise;
   const serial = ++sequence;
   const request = { key, serial, reuseChecks };
+  const current = () => serial === sequence && key === rangeKey(range());
   pending = request;
   renderStatus();
   request.promise = (async () => {
     try {
       if (!window.calendar?.state) throw new Error('Open the Calendar Hub Mac app to load your calendars.');
+      if (readCache || displayedRange !== key) {
+        const saved = await window.calendar.state({ start, end, cachedOnly: true }).catch(() => undefined);
+        if (!current()) return;
+        if (saved) showModel(saved, key);
+        else draw();
+        renderStatus();
+      }
+      if (navigating) {
+        await new Promise(resolve => setTimeout(resolve, 65));
+        if (!current()) return;
+      }
       const result = await window.calendar.state({ start, end, ...(reuseChecks && { preferencesOnly: true }), ...(refreshNotifications && { refreshNotifications: true }) });
-      if (serial !== sequence || key !== rangeKey(range())) return;
-      const connections = result.connections.map(connection => ({
-        ...connection, providerName: result.connectionOptions.integrations.find(row => row.id === connection.provider)?.name || connection.provider
-      }));
-      data = { ...emptyState, ...result, sources: labelNativeSources(result.sources), connections };
+      if (!current()) return;
       loadedRange = key;
       loadError = '';
-      rangeCache.delete(key);
-      rangeCache.set(key, data.items);
-      if (rangeCache.size > 12) rangeCache.delete(rangeCache.keys().next().value);
-      renderSources();
-      renderCalendar();
-      panels.sync();
+      showModel(result, key);
       viewport.dataset.refreshCount = String(++refreshCount);
     } catch (error) {
-      if (serial !== sequence || key !== rangeKey(range())) return;
+      if (!current()) return;
       loadError = errorText(error);
+      draw();
     } finally {
       if (pending === request) { pending = undefined; renderStatus(); }
     }
@@ -256,38 +293,30 @@ async function mutate(method, payload) {
     if (!window.calendar?.[method]) throw new Error('Open the Calendar Hub Mac app to change a calendar.');
     await window.calendar[method](payload);
   } catch (error) { failure = error; }
-  const notifications = method === 'setCalendarNotifications';
-  const preferencesOnly = notifications || (!failure && (method === 'configureTickTick' || method === 'setTickTickCalendarVisible' || method === 'renameConnection'));
+  const preferencesOnly = method === 'setCalendarNotifications' || method === 'setCalendarColor' ||
+    (!failure && (method === 'configureTickTick' || method === 'setTickTickCalendarVisible' || method === 'renameConnection'));
   while (preferencesOnly && pending && !pending.reuseChecks && pending.serial === sequence) await pending.promise;
-  if (!notifications) rangeCache.clear();
-  await refresh({ force: true, preferencesOnly });
+  await refresh({ force: true, preferencesOnly, readCache: true });
   if (failure) throw failure;
   notice = undefined;
   renderStatus();
 }
 function showRange(previous) {
-  const key = rangeKey(range());
-  if (key !== previous) {
-    sequence++;
-    data = { ...data, items: rangeCache.get(key) || [] };
-  }
-  draw();
-  if (key !== previous) {
-    clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(() => refresh(), 65);
-  }
+  if (rangeKey(range()) === previous) draw();
+  else void refresh({ readCache: true, navigating: true });
 }
-function goTo(date, mode = view) {
+function goTo(date, mode = view, scrollToWorkday = false) {
   panels.closeMenu(false);
   const previous = rangeKey(range());
   view = mode;
   localStorage.setItem('view', view);
   selectedDate = date;
+  scrollToWorkdayOnRender = scrollToWorkday;
   month = monthStart(date);
   showRange(previous);
 }
 function navigate(direction) { goTo(addDays(selectedDate, direction * range().days.length)); }
-function goToday() { goTo(localDate()); planner.scrollToWorkday(); }
+function goToday() { goTo(localDate(), view, true); }
 
 $('#new-item').addEventListener('click', () => panels.edit());
 $('#manage-calendars').addEventListener('click', panels.settings);
@@ -309,6 +338,7 @@ function changeCount(commit) {
   const previous = rangeKey(range());
   count = value;
   localStorage.setItem('next-days', String(count));
+  renderDayCount();
   showRange(previous);
 }
 $('#day-count').addEventListener('input', () => changeCount(false));
@@ -355,5 +385,6 @@ window.addEventListener('focus', resume);
 document.addEventListener('visibilitychange', resume);
 setInterval(updateClock, 15000);
 setInterval(() => { if (!document.hidden) void refresh(); }, 5 * 60000);
+renderDayCount();
 draw();
 void refresh();

@@ -153,6 +153,7 @@ export async function startProviderServer({ multipleAccounts = false } = {}) {
         if (resource !== 'events' || !entries) return json(404);
         if (controls.unavailable.has(calendarId)) return json(503, { error: { message: 'Calendar temporarily unavailable.' } });
         if (method === 'GET' && !id) {
+          await controls.beforeEventRead?.(calendarId);
           const from = Date.parse(u.searchParams.get('timeMin')), until = Date.parse(u.searchParams.get('timeMax'));
           const instant = boundary => Date.parse(boundary.dateTime || boundary.date + 'T00:00:00');
           const items = [...entries.values()].filter(item => instant(item.start) < until && instant(item.end) > from);

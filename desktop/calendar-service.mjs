@@ -37,6 +37,20 @@ function overlaps(item, start, end) {
   return first < until && (last > from || (first === last && first >= from));
 }
 
+function rangeCheckedAt(checks, start, end, zone) {
+  const ranges = checks.filter(check => check.zone === zone && check.checkedAt && check.start < end && check.end > start)
+    .sort((a, b) => b.checkedAt.localeCompare(a.checkedAt));
+  let through = start;
+  let oldest = null;
+  while (through < end) {
+    const latest = ranges.find(range => range.start <= through && range.end > through);
+    if (!latest) return null;
+    if (!oldest || latest.checkedAt < oldest) oldest = latest.checkedAt;
+    through = latest.end;
+  }
+  return oldest;
+}
+
 function checkedDraft(input, itemKind) {
   const { start, end } = input;
   const title = typeof input.title === 'string' ? input.title.trim() : '';
@@ -71,6 +85,7 @@ export class CalendarService {
     this.providers = providers;
     this.clients = new Map();
     this.tickTickCalendars = new Map();
+    this.activeWriteIds = new Set();
     this.notifications = new CalendarNotifications(this, providers.notificationCenter);
     this.queue = Promise.resolve();
     let migrated = false;
@@ -90,6 +105,7 @@ export class CalendarService {
     if (operation === 'macGoogleCalendars') return this.macAccountCalendars({ provider: 'google' }, true);
     if (operation === 'state') {
       const { start, end } = input;
+      if (input.cachedOnly === true) return this.state(input);
       const zone = currentTimeZone();
       const preferencesOnly = input.preferencesOnly === true;
       const refreshNotifications = input.refreshNotifications === true;
@@ -161,6 +177,37 @@ export class CalendarService {
 
   connectionSources(connectionId) {
     return this.data.sources.filter(source => source.connectionId === connectionId);
+  }
+
+  displayCalendars() {
+    return [...this.tickTickCalendars.values()].flat().concat(this.data.sources.filter(source => source.provider !== 'ticktick')
+      .map(source => ({ id: source.id, name: source.name, connectionId: source.connectionId, sourceIds: [source.id] })));
+  }
+
+  withCalendarColor(calendar) {
+    const color = this.data.calendarColorOverrides?.[calendar.id];
+    return color ? { ...calendar, color, hasCustomColor: true } : calendar;
+  }
+
+  setCalendarColor({ calendarId, color }) {
+    if (!this.displayCalendars().some(calendar => calendar.id === calendarId)) throw new Error('Choose an available calendar.');
+    if (color !== null && (typeof color !== 'string' || !/^#[0-9a-f]{6}$/i.test(color))) {
+      throw new Error('Enter a six-digit hex color.');
+    }
+    const previous = this.data.calendarColorOverrides;
+    const next = color?.toLowerCase();
+    if (previous?.[calendarId] === next) return;
+    this.data.calendarColorOverrides = { ...previous };
+    if (next) this.data.calendarColorOverrides[calendarId] = next;
+    else delete this.data.calendarColorOverrides[calendarId];
+    try { this.profile.save(); }
+    catch (error) { this.data.calendarColorOverrides = previous; throw error; }
+  }
+
+  removeCalendarPreferences(matches) {
+    for (const preferences of [this.data.notificationPreferences, this.data.calendarColorOverrides]) {
+      for (const id of Object.keys(preferences ?? {})) if (matches(id)) delete preferences[id];
+    }
   }
 
   applyTickTickSettings(connection) {
@@ -349,7 +396,7 @@ export class CalendarService {
     }
     this.clients.delete(connectionId);
     this.tickTickCalendars.delete(connectionId);
-    this.notifications.removePreferences(belongs);
+    this.removeCalendarPreferences(belongs);
     this.profile.save();
     return this.notifications.refresh({ read: 'none' });
   }
@@ -382,7 +429,7 @@ export class CalendarService {
     const sources = this.connectionSources(connection.id);
     connection.ticktick = configureTickTickSettings(connection.ticktick, input, sources.map(source => source.id), this.data.unavailableSourceSettings);
     if (input.groups !== undefined) {
-      this.notifications.removePreferences(id => {
+      this.removeCalendarPreferences(id => {
         const [account, kind, groupId] = JSON.parse(id);
         return account === connection.id && kind === 'custom' && !connection.ticktick.groups.some(group => group.id === groupId);
       });
@@ -481,14 +528,15 @@ export class CalendarService {
       cache.checks = [{ start, end, zone, checkedAt }, ...cache.checks.filter(range => range.start !== start || range.end !== end)].slice(0, 30);
       return currentHealth(source, connection, checkedAt);
     } catch (error) {
-      const covered = cache.checks.find(range => range.start <= start && range.end >= end);
-      return { connectionId: connection.id, sourceId: source.id, state: covered ? 'stale' : 'error',
-        checkedAt: covered?.checkedAt ?? null, message: error.message };
+      const checkedAt = rangeCheckedAt(cache.checks, start, end, zone);
+      return { connectionId: connection.id, sourceId: source.id, state: checkedAt ? 'stale' : 'error',
+        checkedAt, message: error.message };
     }
   }
 
-  async state({ start, end, preferencesOnly = false, refreshNotifications = false }) {
+  async state({ start, end, cachedOnly = false, preferencesOnly = false, refreshNotifications = false }) {
     validateRange(start, end);
+    if (cachedOnly === true) return this.cachedState(start, end);
     const legacy = this.data.connections.find(legacyMacGoogle);
     if (legacy && !preferencesOnly) {
       try {
@@ -512,18 +560,26 @@ export class CalendarService {
     await this.notifications.refresh({ read: refreshNotifications ? 'all' : preferencesOnly ? 'none' : 'changed',
       checkedRange: preferencesOnly ? undefined : { start, end, health } });
     this.profile.save();
+    range.visible = new Set(this.data.sources.filter(source => source.selected).map(source => source.id));
+    return this.cachedState(start, end, health);
+  }
+
+  cachedState(start, end, health = []) {
+    const zone = currentTimeZone();
     const legacyIds = new Set(this.data.connections.filter(legacyMacGoogle).map(row => row.id));
     const sources = this.data.sources.map(({ remote, remoteId, localReadOnly, ...source }) => {
       source.itemKind = this.integration(source.provider)?.itemKind ?? (source.provider === 'ticktick' ? 'task' : 'event');
       if (source.provider === 'ticktick') return { ...source, ...listMetadata(remote) };
       if (source.provider === 'mac' || legacyIds.has(source.connectionId)) {
-        return { ...source, nativeAccountId: remote.accountId, nativeAccountName: remote.accountName };
+        source.nativeAccountId = remote.accountId;
+        source.nativeAccountName = remote.accountName;
       }
-      return source;
+      return this.withCalendarColor(source);
     });
-    range.visible = new Set(sources.filter(source => source.selected).map(source => source.id));
-    const items = sources.filter(s => s.selected).flatMap(source => this.cache(source.id).items
-      .filter(item => !item.completed && overlaps(item, start, end) && !this.data.hidden.some(h => matches(h, source.id, item.id)))
+    const selected = sources.filter(source => source.selected);
+    const rangeCovered = selected.every(source => rangeCheckedAt(this.data.cache[source.id]?.checks ?? [], start, end, zone) !== null);
+    const items = selected.flatMap(source => (this.data.cache[source.id]?.items ?? [])
+      .filter(item => !item.completed && !item.movedToSourceId && overlaps(item, start, end) && !this.data.hidden.some(h => matches(h, source.id, item.id)))
       .map(item => publicItem(item, source)));
     const options = this.providers.connectionOptions ?? {};
     const googleBrowser = Boolean(options.googleBrowser || this.data.connections.some(c => c.provider === 'google' && c.route !== 'mac'));
@@ -536,9 +592,11 @@ export class CalendarService {
         return { id, provider, name, route, ...(accountId && { accountId }), ...(legacyMacGoogle(connection) && { legacyMac: true }),
           ...(ticktick && { ticktick: publicTickTickSettings(ticktick) }) };
       }),
-      ticktickCalendars: this.data.connections.flatMap(connection => this.tickTickCalendars.get(connection.id) ?? []),
+      ticktickCalendars: this.data.connections.flatMap(connection => this.tickTickCalendars.get(connection.id) ?? [])
+        .map(calendar => this.withCalendarColor(calendar)),
       notificationPreferences: this.notifications.preferences(), notificationError: this.notifications.error,
-      sources, items, hidden: this.data.hidden, health, uncertain: this.data.journal
+      sources, items, rangeCovered, hidden: this.data.hidden, health,
+      uncertain: this.data.journal.filter(entry => !this.activeWriteIds.has(entry.id))
     };
   }
 
@@ -592,6 +650,7 @@ export class CalendarService {
     this.data.journal.push(record);
     this.profile.save();
     let result;
+    this.activeWriteIds.add(record.id);
     try {
       if (action === 'create') result = await client.create(source.remote, { ...draft, operationId: record.id });
       if (action === 'update') result = await client.update(source.remote, original, draft);
@@ -602,6 +661,8 @@ export class CalendarService {
       else this.data.journal = this.data.journal.filter(entry => entry.id !== record.id);
       this.profile.save();
       throw error;
+    } finally {
+      this.activeWriteIds.delete(record.id);
     }
     cache.items = cache.items.filter(item => item.id !== (original?.id ?? result?.id));
     if ((action === 'create' || action === 'update') && result?.id) cache.items.push(result);
